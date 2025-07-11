@@ -1,4 +1,5 @@
 #include "SyncServer.h"
+#include "FileMonitor.h"
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
@@ -7,6 +8,9 @@
 #include <QUrlQuery>
 #include <QTimer>
 #include <QTcpSocket>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonDocument>
 
 SyncServer::SyncServer(QObject *parent)
     : QObject(parent)
@@ -16,6 +20,37 @@ SyncServer::SyncServer(QObject *parent)
     m_cleanupTimer.setInterval(60 * 1000); // раз в минуту
     connect(&m_cleanupTimer, &QTimer::timeout, this, &SyncServer::cleanupInactiveClients);
     m_cleanupTimer.start();
+
+    // Инициализация мониторинга файлов
+    m_syncDirectory = "/home/user/sync-server";  // Папка сервера
+    m_monitor = new FileMonitor(m_syncDirectory, this);
+
+    connect(m_monitor, &FileMonitor::fileChanged, this, [=](const FileEntry &entry){
+        qDebug() << "[SERVER] Изменён/добавлен:" << entry.path << entry.version;
+
+        // Обнови внутреннюю структуру, если есть
+        m_fileEntries[entry.path] = entry;
+
+        // Рассылаем всем зарегистрированным клиентам обновление
+        //notifyClientsAboutChange(entry);
+    });
+
+    connect(m_monitor, &FileMonitor::fileRemoved, this, [=](const QString &path){
+        qDebug() << "[SERVER] Удалён:" << path;
+
+        m_fileEntries.remove(path);
+
+        // Рассылаем клиентам, что файл удалён
+        //notifyClientsAboutRemoval(path);
+    });
+
+    m_monitor->start();
+
+    // Заполняем m_fileEntries актуальными файлами из папки
+    const auto initialFiles = m_monitor->currentFiles();
+    for (const FileEntry &entry : initialFiles) {
+        m_fileEntries[entry.path] = entry;
+    }
 }
 
 bool SyncServer::listen(const QHostAddress &address, quint16 port)
@@ -68,9 +103,39 @@ void SyncServer::handleClientReadyRead()
         return;
     }
 
-    QByteArray request = buffer.left(headerEndIndex + 4);
-    // Можно расширить, чтобы обработать body для POST, но пока только заголовки
-    handleClientRequest(socket, buffer);
+    QByteArray headerPart = buffer.left(headerEndIndex + 4);
+    QList<QByteArray> lines = headerPart.split('\n');
+    if (lines.isEmpty())
+        return;
+
+    QByteArray requestLine = lines.first().trimmed();
+    QList<QByteArray> parts = requestLine.split(' ');
+    if (parts.size() < 2)
+        return;
+
+    QByteArray method = parts[0];
+    QByteArray path = parts[1];
+
+    // Собираем заголовки
+    QMap<QString, QString> headers;
+    int contentLength = 0;
+
+    for (int i = 1; i < lines.size(); ++i) {
+        QByteArray line = lines[i].trimmed();
+        int colonIndex = line.indexOf(':');
+        if (colonIndex > 0) {
+            QString key = QString::fromUtf8(line.left(colonIndex)).toLower();
+            QString value = QString::fromUtf8(line.mid(colonIndex + 1)).trimmed();
+            headers[key] = value;
+
+            if (key == "content-length")
+                contentLength = value.toInt();
+        }
+    }
+
+    // Выделяем body
+    QByteArray body = buffer.mid(headerEndIndex + 4);
+    handleClientRequest(socket, buffer, headers, body, path);
 
     m_clientBuffers.remove(socket);
 }
@@ -87,7 +152,10 @@ void SyncServer::handleClientDisconnected()
     socket->deleteLater();
 }
 
-void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data)
+void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data,
+                                     const QMap<QString, QString>& headers,
+                                     const QByteArray &body,
+                                     const QByteArray& path)
 {
     qDebug() << "Request:" << data;
 
@@ -107,23 +175,20 @@ void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data)
         return;
     }
 
-    if (data.startsWith("GET /sync-list")) {
-        handleSyncListRequest(socket);
-        return;
-    }
-
-    if (data.startsWith("GET /download")) {
-        QString requestStr = QString::fromUtf8(data);
-        QString pathPart = requestStr.split(" ")[1];
-        QUrl url(pathPart);
-        QUrlQuery query(url);
-        QString fileName = query.queryItemValue("file");
-        handleDownloadRequest(socket, fileName);
+    if (data.startsWith("POST /sync-list")) {
+        handleSyncList(socket, body);
         return;
     }
 
     if (data.startsWith("POST /upload")) {
-        handleUploadRequest(socket, data);
+        handleUpload(socket, headers, body);
+        return;
+    }
+
+    if (data.startsWith("GET /download")) {
+        QUrl url = QUrl::fromEncoded(path);
+        QString relativePath = QUrlQuery(url).queryItemValue("path");
+        handleDownload(socket, relativePath);
         return;
     }
 
@@ -138,19 +203,45 @@ void SyncServer::handleRegisterRequest(const QHostAddress &addr)
     qDebug() << "Registered client:" << ip;
 }
 
-void SyncServer::handleSyncListRequest(QTcpSocket *socket)
+void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
 {
-    QDir dir(".");
-    QFileInfoList files = dir.entryInfoList(QDir::Files);
-    QByteArray body;
-
-    for (const QFileInfo &info : files) {
-        QString line = info.fileName() + " " + info.lastModified().toString(Qt::ISODate) + "\n";
-        body.append(line.toUtf8());
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isArray()) {
+        qWarning() << "Invalid sync-list JSON:" << parseError.errorString();
+        socket->write("HTTP/1.1 400 Bad Request\r\n\r\nInvalid JSON");
+        socket->disconnectFromHost();
+        return;
     }
 
-    QByteArray response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n" + body;
-    socket->write(response);
+    QJsonArray arr = doc.array();
+    bool allAccepted = true;
+
+    for (const QJsonValue &val : arr) {
+        if (!val.isObject()) continue;
+        QJsonObject obj = val.toObject();
+        QString path = obj["path"].toString();
+        quint64 version = obj["version"].toString().toULongLong();
+
+        const bool exists = m_fileEntries.contains(path);
+        const quint64 currentVer = exists ? m_fileEntries[path].version : 0;
+
+        if (!exists || version > currentVer) {
+            qDebug() << "[SyncServer] Accept newer file:" << path << "ver:" << version;
+            // Примем: возможно, позже клиент загрузит тело
+            // Не обновляем m_fileEntries пока не получим файл
+        } else {
+            qDebug() << "[SyncServer] Reject outdated file:" << path;
+            allAccepted = false;
+        }
+    }
+
+    if (allAccepted) {
+        socket->write("HTTP/1.1 200 OK\r\n\r\nAll files accepted");
+    } else {
+        socket->write("HTTP/1.1 409 Conflict\r\n\r\nSome files are outdated");
+    }
+
     socket->disconnectFromHost();
 }
 
@@ -195,41 +286,88 @@ void SyncServer::handleDownloadRequest(QTcpSocket *socket, const QString &fileNa
     }
 }
 
-void SyncServer::handleUploadRequest(QTcpSocket *socket, const QByteArray &rawRequest)
+void SyncServer::handleDownload(QTcpSocket *socket, const QString &relativePath)
 {
-    int sepIndex = rawRequest.indexOf("\r\n\r\n");
-    if (sepIndex == -1) {
-        socket->write("HTTP/1.1 400 Bad Request\r\n\r\nMalformed request\n");
-        socket->disconnectFromHost();
+    QString fullPath = m_syncDirectory + "/" + relativePath;
+    QFile file(fullPath);
+
+    if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
+        sendHttpResponse(socket, 404, "Not Found", "File not found");
         return;
     }
 
-    QByteArray body = rawRequest.mid(sepIndex + 4);
-    int filenameEnd = body.indexOf('\n');
-
-    if (filenameEnd == -1) {
-        socket->write("HTTP/1.1 400 Bad Request\r\n\r\nNo filename specified\n");
-        socket->disconnectFromHost();
-        return;
-    }
-
-    QString fileName = QString::fromUtf8(body.left(filenameEnd)).trimmed();
-    QByteArray fileData = body.mid(filenameEnd + 1);
-
-    QFile file(fileName);
-    if (!file.open(QIODevice::WriteOnly)) {
-        socket->write("HTTP/1.1 500 Internal Server Error\r\n\r\nCannot write file\n");
-        socket->disconnectFromHost();
-        return;
-    }
-    file.write(fileData);
+    QByteArray data = file.readAll();
     file.close();
 
-    m_fileVersions[fileName] = QFileInfo(file).lastModified();
+    QByteArray response;
+    response += "HTTP/1.1 200 OK\r\n";
+    response += "Content-Type: application/octet-stream\r\n";
+    response += "Content-Length: " + QByteArray::number(data.size()) + "\r\n";
+    response += "Connection: close\r\n\r\n";
+    response += data;
 
-    qDebug() << "Received uploaded file:" << fileName;
-    socket->write("HTTP/1.1 200 OK\r\n\r\nUpload complete\n");
-    socket->disconnectFromHost();
+    socket->write(response);
+}
+
+
+void SyncServer::handleUpload(QTcpSocket *socket,
+                              const QMap<QString, QString> &headers,
+                              const QByteArray &body)
+{
+    QString relativePath = headers.value("x-file-path");
+    int version = headers.value("x-file-version").toInt();
+    QString type = headers.value("x-file-type").toLower();
+    if (type.isEmpty()) {
+        type = "modified"; // По умолчанию
+    }
+
+    if (relativePath.isEmpty() || version <= 0 || body.isEmpty()) {
+        sendHttpResponse(socket, 400, "Bad Request", "Missing headers or body");
+        return;
+    }
+
+    // Сравнение версий
+    FileEntry current = m_fileEntries.value(relativePath, FileEntry{relativePath, "unknown", 0});
+    if (version <= current.version) {
+        qDebug() << "Upload rejected: incoming version" << version << "≤ current version" << current.version;
+        sendHttpResponse(socket, 409, "Conflict", "Older or same version received");
+        return;
+    }
+
+    // Версия новее — сохраняем
+    QString fullPath = m_syncDirectory + "/" + relativePath;
+    QDir().mkpath(QFileInfo(fullPath).absolutePath());
+
+    QFile file(fullPath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        sendHttpResponse(socket, 500, "Internal Server Error", "Cannot write file");
+        return;
+    }
+
+    file.write(body);
+    file.close();
+
+    // Обновить локальный список
+    m_fileEntries[relativePath] = FileEntry{ relativePath, type, version };
+
+    qDebug() << "Accepted new version for" << relativePath << "version:" << version;
+
+    sendHttpResponse(socket, 200, "OK", "File uploaded");
+
+    // Уведомить других клиентов
+    notifyUpdate(relativePath);
+}
+
+void SyncServer::sendHttpResponse(QTcpSocket *socket, int code, const QString &status, const QString &body)
+{
+    QByteArray response;
+    response += "HTTP/1.1 " + QByteArray::number(code) + " " + status.toUtf8() + "\r\n";
+    response += "Content-Type: text/plain\r\n";
+    response += "Content-Length: " + QByteArray::number(body.toUtf8().size()) + "\r\n";
+    response += "Connection: close\r\n\r\n";
+    response += body.toUtf8();
+
+    socket->write(response);
 }
 
 void SyncServer::fetchFromRemote(const QString &path, std::function<void(QByteArray)> callback)
@@ -285,3 +423,32 @@ void SyncServer::cleanupInactiveClients()
         m_registeredClients.remove(ip);
     }
 }
+
+void SyncServer::notifyUpdate(const QString &relativePath)
+{
+    const QByteArray json = "{\"path\": \"" + relativePath.toUtf8() + "\"}";
+
+    for (auto it = m_registeredClients.begin(); it != m_registeredClients.end(); ++it) {
+        const QString &clientIp = it.key();
+        QHostAddress clientAddr(clientIp);
+
+        QTcpSocket *socket = new QTcpSocket(this);
+
+        connect(socket, &QTcpSocket::connected, [=]() {
+            QByteArray request;
+            request += "POST /notify HTTP/1.1\r\n";
+            request += "Host: " + clientIp.toUtf8() + "\r\n";
+            request += "Content-Type: application/json\r\n";
+            request += "Content-Length: " + QByteArray::number(json.size()) + "\r\n";
+            request += "Connection: close\r\n\r\n";
+            request += json;
+
+            socket->write(request);
+        });
+
+        connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+
+        socket->connectToHost(clientAddr, 8080);  // используем порт клиента
+    }
+}
+
