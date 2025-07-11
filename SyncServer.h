@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QDateTime>
 #include <QHostAddress>
+#include <QTimer>
 #include <functional>
 
 class QTcpSocket;
@@ -24,11 +25,13 @@ private slots:
     void handleNewConnection();
     void handleClientReadyRead();
     void handleClientDisconnected();
+    void cleanupInactiveClients();
 
 private:
     QTcpServer m_server;
     QHash<QString, QDateTime> m_fileVersions;
     QHash<QString, QDateTime> m_registeredClients;
+    QTimer m_cleanupTimer;
 
     QHash<QTcpSocket*, QByteArray> m_clientBuffers;
 

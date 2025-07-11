@@ -6,9 +6,11 @@ TEMPLATE = app
 SOURCES += main.cpp \
            DiscoveryClient.cpp \
            DiscoveryResponder.cpp \
-           SyncServer.cpp
+           SyncServer.cpp \
+           SyncService.cpp \
 
 HEADERS += \
            DiscoveryClient.h \
            DiscoveryResponder.h \
-           SyncServer.h
+           SyncServer.h \
+           SyncService.h \

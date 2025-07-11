@@ -12,6 +12,10 @@ SyncServer::SyncServer(QObject *parent)
     : QObject(parent)
 {
     connect(&m_server, &QTcpServer::newConnection, this, &SyncServer::handleNewConnection);
+
+    m_cleanupTimer.setInterval(60 * 1000); // раз в минуту
+    connect(&m_cleanupTimer, &QTimer::timeout, this, &SyncServer::cleanupInactiveClients);
+    m_cleanupTimer.start();
 }
 
 bool SyncServer::listen(const QHostAddress &address, quint16 port)
@@ -90,6 +94,15 @@ void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data)
     if (data.startsWith("GET /register")) {
         handleRegisterRequest(socket->peerAddress());
         socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nRegistered\n");
+        socket->disconnectFromHost();
+        return;
+    }
+
+    if (data.startsWith("GET /ping")) {
+        QString clientIp = socket->peerAddress().toString();
+        m_registeredClients[clientIp] = QDateTime::currentDateTime();
+        qDebug() << "Ping from" << clientIp;
+        socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nPong\n");
         socket->disconnectFromHost();
         return;
     }
@@ -254,4 +267,21 @@ void SyncServer::fetchFromRemote(const QString &path, std::function<void(QByteAr
     connect(timeout, &QTimer::timeout, finish);
 
     remoteSocket->connectToHost("example.com", 80);
+}
+
+void SyncServer::cleanupInactiveClients()
+{
+    const QDateTime now = QDateTime::currentDateTime();
+    QStringList toRemove;
+
+    for (auto it = m_registeredClients.begin(); it != m_registeredClients.end(); ++it) {
+        if (it.value().secsTo(now) > 180) { // 3 минуты
+            toRemove << it.key();
+        }
+    }
+
+    for (const QString &ip : toRemove) {
+        qDebug() << "Removing inactive client:" << ip;
+        m_registeredClients.remove(ip);
+    }
 }

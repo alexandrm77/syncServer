@@ -5,6 +5,7 @@
 #include "SyncServer.h"
 #include "DiscoveryResponder.h"
 #include "DiscoveryClient.h"
+#include "SyncService.h"
 
 int main(int argc, char *argv[])
 {
@@ -29,7 +30,7 @@ int main(int argc, char *argv[])
     if (mode == "server") {
         qDebug() << "Running in SERVER mode";
 
-        SyncServer *server = new SyncServer(&a);
+        auto server = new SyncServer(&a);
         if (!server->listen(QHostAddress::AnyIPv4, 8080)) {
             qCritical() << "Failed to listen on port 8080:";
             return 1;
@@ -40,13 +41,12 @@ int main(int argc, char *argv[])
     } else if (mode == "client") {
         qDebug() << "Running in CLIENT mode";
 
-        DiscoveryClient *client = new DiscoveryClient();
+        auto client = new DiscoveryClient(&a);
 
         QObject::connect(client, &DiscoveryClient::serverDiscovered, [=](const QHostAddress &serverAddr) {
             qDebug() << "Discovered server at" << serverAddr.toString();
 
-            QTcpSocket *socket = new QTcpSocket();
-            qDebug() << "before register, trying to connect to" << serverAddr.toString();
+            auto socket = new QTcpSocket(); // родитель — QCoreApplication, чтобы не удалить раньше времени
 
             QObject::connect(socket, &QTcpSocket::connected, [=]() {
                 qDebug() << "GET /register ...";
@@ -57,6 +57,10 @@ int main(int argc, char *argv[])
             QObject::connect(socket, &QTcpSocket::readyRead, [=]() {
                 QByteArray response = socket->readAll();
                 qDebug() << "Response:\n" << response;
+
+                // Запускаем SyncService после успешной регистрации
+                auto syncService = new SyncService(serverAddr, 8080, qApp);
+                syncService->start();
             });
 
             QObject::connect(socket, &QTcpSocket::errorOccurred, [=](QAbstractSocket::SocketError err) {
@@ -67,8 +71,7 @@ int main(int argc, char *argv[])
 
             QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
 
-            socket->connectToHost(serverAddr, 8080);  // ← это запускает асинхронное соединение
-
+            socket->connectToHost(serverAddr, 8080);
         });
 
         client->startDiscovery();
