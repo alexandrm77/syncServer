@@ -53,6 +53,18 @@ private:
     void handleDelete(QTcpSocket *socket, const QMap<QString, QString> &headers);
     void handleUpload(QTcpSocket *socket, const QMap<QString, QString> &headers, const QByteArray &body);
     void fetchFromRemote(const QString &path, std::function<void(QByteArray)> callback);
-    void sendHttpResponse(QTcpSocket *socket, int code, const QString &status, const QString &body);
+    // Отправка HTTP-ответа с текстовым телом (QString)
+    void sendHttpResponse(QTcpSocket *socket,
+                          int code,
+                          const QString &status,
+                          const QString &body,
+                          const QString &contentType = "text/plain");
+
+    // Отправка HTTP-ответа с бинарным телом (QByteArray)
+    void sendHttpResponse(QTcpSocket *socket,
+                          int code,
+                          const QString &status,
+                          const QByteArray &body,
+                          const QString &contentType = "application/octet-stream");
     void notifyUpdate(const QString &relativePath, bool deleted = false);
 };

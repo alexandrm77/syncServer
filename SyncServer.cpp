@@ -161,7 +161,7 @@ void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data,
 
     if (data.startsWith("GET /register")) {
         handleRegisterRequest(socket->peerAddress());
-        socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nRegistered\n");
+        sendHttpResponse(socket, 200, "OK", QString("Registered"));
         socket->disconnectFromHost();
         return;
     }
@@ -170,7 +170,7 @@ void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data,
         QString clientIp = socket->peerAddress().toString();
         m_registeredClients[clientIp] = QDateTime::currentDateTime();
         qDebug() << "Ping from" << clientIp;
-        socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nPong\n");
+        sendHttpResponse(socket, 200, "OK", QString("Pong"));
         socket->disconnectFromHost();
         return;
     }
@@ -197,7 +197,7 @@ void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data,
         return;
     }
 
-    socket->write("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nUnknown command\n");
+    sendHttpResponse(socket, 404, "Not Found", QString("Unknown command"));
     socket->disconnectFromHost();
 }
 
@@ -214,7 +214,7 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
     QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
     if (parseError.error != QJsonParseError::NoError || !doc.isArray()) {
         qWarning() << "Invalid sync-list JSON:" << parseError.errorString();
-        socket->write("HTTP/1.1 400 Bad Request\r\n\r\nInvalid JSON");
+        sendHttpResponse(socket, 400, "Bad Request", QString("Invalid JSON"));
         socket->disconnectFromHost();
         return;
     }
@@ -244,9 +244,9 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
     }
 
     if (allAccepted) {
-        socket->write("HTTP/1.1 200 OK\r\n\r\nAll files accepted");
+        sendHttpResponse(socket, 200, "OK", QString("All files accepted"));
     } else {
-        socket->write("HTTP/1.1 409 Conflict\r\n\r\nSome files are outdated");
+        sendHttpResponse(socket, 409, "Conflict", QString("Some files are outdated"));
     }
 
     socket->disconnectFromHost();
@@ -255,7 +255,7 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
 void SyncServer::handleDownloadRequest(QTcpSocket *socket, const QString &fileName)
 {
     if (fileName.isEmpty()) {
-        socket->write("HTTP/1.1 400 Bad Request\r\n\r\nNo file specified\n");
+        sendHttpResponse(socket, 400, "Bad Request", QString("No file specified"));
         socket->disconnectFromHost();
         return;
     }
@@ -263,7 +263,7 @@ void SyncServer::handleDownloadRequest(QTcpSocket *socket, const QString &fileNa
     QFile file(fileName);
     if (file.exists()) {
         if (!file.open(QIODevice::ReadOnly)) {
-            socket->write("HTTP/1.1 500 Internal Server Error\r\n\r\nCannot open file\n");
+            sendHttpResponse(socket, 500, "Internal Server Error", QString("Cannot open file"));
             socket->disconnectFromHost();
             return;
         }
@@ -287,7 +287,7 @@ void SyncServer::handleDownloadRequest(QTcpSocket *socket, const QString &fileNa
                 QByteArray response = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n" + data;
                 socket->write(response);
             } else {
-                socket->write("HTTP/1.1 404 Not Found\r\n\r\nFile not found and not fetched\n");
+                sendHttpResponse(socket, 404, "Not Found", QString("File not found and not fetched"));
             }
             socket->disconnectFromHost();
         });
@@ -300,21 +300,14 @@ void SyncServer::handleDownload(QTcpSocket *socket, const QString &relativePath)
     QFile file(fullPath);
 
     if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
-        sendHttpResponse(socket, 404, "Not Found", "File not found");
+        sendHttpResponse(socket, 404, "Not Found", QString("File not found"));
         return;
     }
 
     QByteArray data = file.readAll();
     file.close();
 
-    QByteArray response;
-    response += "HTTP/1.1 200 OK\r\n";
-    response += "Content-Type: application/octet-stream\r\n";
-    response += "Content-Length: " + QByteArray::number(data.size()) + "\r\n";
-    response += "Connection: close\r\n\r\n";
-    response += data;
-
-    socket->write(response);
+    sendHttpResponse(socket, 200, "OK", data, "application/octet-stream");
 }
 
 
@@ -330,7 +323,7 @@ void SyncServer::handleUpload(QTcpSocket *socket,
     }
 
     if (relativePath.isEmpty() || version <= 0 || body.isEmpty()) {
-        sendHttpResponse(socket, 400, "Bad Request", "Missing headers or body");
+        sendHttpResponse(socket, 400, "Bad Request", QString("Missing headers or body"));
         return;
     }
 
@@ -338,7 +331,7 @@ void SyncServer::handleUpload(QTcpSocket *socket,
     FileEntry current = m_fileEntries.value(relativePath, FileEntry{relativePath, "unknown", 0});
     if (version <= current.version) {
         qDebug() << "Upload rejected: incoming version" << version << "≤ current version" << current.version;
-        sendHttpResponse(socket, 409, "Conflict", "Older or same version received");
+        sendHttpResponse(socket, 409, "Conflict", QString("Older or same version received"));
         return;
     }
 
@@ -348,7 +341,7 @@ void SyncServer::handleUpload(QTcpSocket *socket,
 
     QFile file(fullPath);
     if (!file.open(QIODevice::WriteOnly)) {
-        sendHttpResponse(socket, 500, "Internal Server Error", "Cannot write file");
+        sendHttpResponse(socket, 500, "Internal Server Error", QString("Cannot write file"));
         return;
     }
 
@@ -360,20 +353,36 @@ void SyncServer::handleUpload(QTcpSocket *socket,
 
     qDebug() << "Accepted new version for" << relativePath << "version:" << version;
 
-    sendHttpResponse(socket, 200, "OK", "File uploaded");
+    sendHttpResponse(socket, 200, "OK", QString("File uploaded"));
 
     // Уведомить других клиентов
     notifyUpdate(relativePath);
 }
 
-void SyncServer::sendHttpResponse(QTcpSocket *socket, int code, const QString &status, const QString &body)
+void SyncServer::sendHttpResponse(QTcpSocket *socket, int code, const QString &status,
+                                  const QString &body, const QString &contentType)
 {
     QByteArray response;
     response += "HTTP/1.1 " + QByteArray::number(code) + " " + status.toUtf8() + "\r\n";
-    response += "Content-Type: text/plain\r\n";
+    response += "Content-Type: " + contentType.toUtf8() + "\r\n";
     response += "Content-Length: " + QByteArray::number(body.toUtf8().size()) + "\r\n";
     response += "Connection: close\r\n\r\n";
     response += body.toUtf8();
+
+    socket->write(response);
+}
+
+void SyncServer::sendHttpResponse(QTcpSocket *socket, int code,
+                                  const QString &status,
+                                  const QByteArray &body,
+                                  const QString &contentType)
+{
+    QByteArray response;
+    response += "HTTP/1.1 " + QByteArray::number(code) + " " + status.toUtf8() + "\r\n";
+    response += "Content-Type: " + contentType.toUtf8() + "\r\n";
+    response += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
+    response += "Connection: close\r\n\r\n";
+    response += body;
 
     socket->write(response);
 }
@@ -469,7 +478,7 @@ void SyncServer::handleDelete(QTcpSocket *socket, const QMap<QString, QString> &
 {
     QString relativePath = headers.value("x-file-path");
     if (relativePath.isEmpty()) {
-        sendHttpResponse(socket, 400, "Bad Request", "Missing x-file-path header");
+        sendHttpResponse(socket, 400, "Bad Request", QString("Missing x-file-path header"));
         return;
     }
 
@@ -477,14 +486,14 @@ void SyncServer::handleDelete(QTcpSocket *socket, const QMap<QString, QString> &
     QFile file(fullPath);
 
     if (file.exists() && !file.remove()) {
-        sendHttpResponse(socket, 500, "Internal Server Error", "Failed to delete file");
+        sendHttpResponse(socket, 500, "Internal Server Error", QString("Failed to delete file"));
         return;
     }
 
     m_fileEntries.remove(relativePath);
     qDebug() << "Deleted file:" << relativePath;
 
-    sendHttpResponse(socket, 200, "OK", "File deleted");
+    sendHttpResponse(socket, 200, "OK", QString("File deleted"));
 
     notifyUpdate(relativePath, /*deleted=*/true);
 }
