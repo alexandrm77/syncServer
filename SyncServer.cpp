@@ -22,7 +22,7 @@ SyncServer::SyncServer(QObject *parent)
     m_cleanupTimer.start();
 
     // Инициализация мониторинга файлов
-    m_syncDirectory = "/home/user/sync-server";  // Папка сервера
+    m_syncDirectory = QDir::homePath()+ "/test/serv";  // Папка сервера
     m_monitor = new FileMonitor(m_syncDirectory, this);
 
     connect(m_monitor, &FileMonitor::fileChanged, this, [=](const FileEntry &entry){
