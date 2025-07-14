@@ -41,7 +41,7 @@ SyncServer::SyncServer(QObject *parent)
         m_fileEntries.remove(path);
 
         // Уведомить клиентов
-        notifyUpdate(path);
+        notifyUpdate(path, /*deleted=*/true);
     });
 
     m_monitor->start();
@@ -228,12 +228,24 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
 
         QJsonObject obj = val.toObject();
         QString path = obj["path"].toString();
+        QString type = obj["type"].toString();
         quint64 version = obj["version"].toString().toULongLong();
 
         const bool exists = m_fileEntries.contains(path);
         const quint64 currentVer = exists ? m_fileEntries[path].version : 0;
 
-        if (!exists || version > currentVer) {
+        if (type == "deleted") {
+            // Принудительно удаляем файл
+            QString fullPath = m_syncDirectory + "/" + path;
+            QFile::remove(fullPath);
+            m_fileEntries.remove(path);
+
+            qDebug() << "[SyncServer] Deleted:" << path;
+
+            // Отправляем уведомление об удалении
+            notifyUpdate(path, true);
+        }
+        else if (!exists || version > currentVer) {
             qDebug() << "[SyncServer] Accept newer file:" << path << "ver:" << version;
             // Примем: возможно, позже клиент загрузит тело
             // Не обновляем m_fileEntries пока не получим файл

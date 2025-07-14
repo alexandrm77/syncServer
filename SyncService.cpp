@@ -14,16 +14,27 @@ SyncService::SyncService(const QHostAddress &serverAddress,
     m_pingTimer.setInterval(30 * 1000); // 30 секунд
     connect(&m_pingTimer, &QTimer::timeout, this, &SyncService::sendPing);
 
-    m_syncDirectory = "/home/user/sync";  // или аргумент конструктора
+    m_syncDirectory = QDir::homePath()+ "/test/client";
     m_monitor = new FileMonitor(m_syncDirectory, this);
 
     connect(m_monitor, &FileMonitor::fileChanged, this, [=](const FileEntry &entry){
         qDebug() << "Изменён/добавлен:" << entry.path << entry.version;
+        if (m_ignoreNextChange.contains(entry.path)) {
+            qDebug() << "Ignoring fileChanged for:" << entry.path;
+            m_ignoreNextChange.remove(entry.path);
+            return;
+        }
         // Отправим sync-list с изменённым файлом
         sendSyncListToServer({ entry });
     });
 
     connect(m_monitor, &FileMonitor::fileRemoved, this, [=](const QString &relativePath){
+        if (m_ignoreNextChange.contains(relativePath)) {
+            qDebug() << "Ignoring fileRemoved for:" << relativePath;
+            m_ignoreNextChange.remove(relativePath);
+            return;
+        }
+
         qDebug() << "Удалён:" << relativePath;
 
         FileEntry deletedEntry;
@@ -158,6 +169,7 @@ void SyncService::uploadFile(const FileEntry &entry)
 void SyncService::getFile(const QString &relativePath)
 {
     QTcpSocket *socket = new QTcpSocket(this);
+    QByteArray *buffer = new QByteArray;
 
     connect(socket, &QTcpSocket::connected, [=]() {
         QByteArray request;
@@ -168,14 +180,13 @@ void SyncService::getFile(const QString &relativePath)
     });
 
     connect(socket, &QTcpSocket::readyRead, [=]() {
-        static QByteArray buffer;
-        buffer += socket->readAll();
+        buffer->append(socket->readAll());
 
-        int headerEndIndex = buffer.indexOf("\r\n\r\n");
+        int headerEndIndex = buffer->indexOf("\r\n\r\n");
         if (headerEndIndex == -1)
-            return; // Ждём полный заголовок
+            return;
 
-        QByteArray body = buffer.mid(headerEndIndex + 4);
+        QByteArray body = buffer->mid(headerEndIndex + 4);
 
         // Сохраняем файл
         QString fullPath = m_syncDirectory + "/" + relativePath;
@@ -188,6 +199,8 @@ void SyncService::getFile(const QString &relativePath)
         } else {
             qWarning() << "Failed to save downloaded file:" << fullPath;
         }
+
+        delete buffer;
     });
 
     connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
@@ -215,8 +228,13 @@ void SyncService::handleNotify(QTcpSocket *socket, const QByteArray &body)
         qDebug() << "Received deletion notification for" << path;
         QString fullPath = m_syncDirectory + "/" + path;
         QFile::remove(fullPath);
+
+        // Добавляем в список игнорирования
+        m_ignoreNextChange.insert(path);
     } else {
         qDebug() << "Received update notification for" << path;
+        // Тоже добавим сюда, чтобы избежать лишнего fileChanged
+        m_ignoreNextChange.insert(path);
         getFile(path);
     }
 }

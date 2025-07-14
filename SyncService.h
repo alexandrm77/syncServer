@@ -25,6 +25,7 @@ private:
     QString m_syncDirectory;
     FileMonitor *m_monitor = nullptr;
     QTcpServer m_server;
+    QSet<QString> m_ignoreNextChange;
 
     void sendPing();
     void sendSyncListToServer(const QList<FileEntry> &files);
