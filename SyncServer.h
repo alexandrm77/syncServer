@@ -50,8 +50,9 @@ private:
     void handleSyncList(QTcpSocket *socket, const QByteArray &body);
     void handleDownloadRequest(QTcpSocket *socket, const QString &fileName);
     void handleDownload(QTcpSocket *socket, const QString &relativePath);
+    void handleDelete(QTcpSocket *socket, const QMap<QString, QString> &headers);
     void handleUpload(QTcpSocket *socket, const QMap<QString, QString> &headers, const QByteArray &body);
     void fetchFromRemote(const QString &path, std::function<void(QByteArray)> callback);
     void sendHttpResponse(QTcpSocket *socket, int code, const QString &status, const QString &body);
-    void notifyUpdate(const QString &relativePath);
+    void notifyUpdate(const QString &relativePath, bool deleted = false);
 };

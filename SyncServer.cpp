@@ -192,6 +192,11 @@ void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data,
         return;
     }
 
+    if (data.startsWith("POST /delete")) {
+        handleDelete(socket, headers);
+        return;
+    }
+
     socket->write("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nUnknown command\n");
     socket->disconnectFromHost();
 }
@@ -218,7 +223,9 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
     bool allAccepted = true;
 
     for (const QJsonValue &val : arr) {
-        if (!val.isObject()) continue;
+        if (!val.isObject())
+            continue;
+
         QJsonObject obj = val.toObject();
         QString path = obj["path"].toString();
         quint64 version = obj["version"].toString().toULongLong();
@@ -260,6 +267,7 @@ void SyncServer::handleDownloadRequest(QTcpSocket *socket, const QString &fileNa
             socket->disconnectFromHost();
             return;
         }
+
         QByteArray content = file.readAll();
         file.close();
 
@@ -424,9 +432,14 @@ void SyncServer::cleanupInactiveClients()
     }
 }
 
-void SyncServer::notifyUpdate(const QString &relativePath)
+void SyncServer::notifyUpdate(const QString &relativePath, bool deleted)
 {
-    const QByteArray json = "{\"path\": \"" + relativePath.toUtf8() + "\"}";
+    QJsonObject obj;
+    obj["path"] = relativePath;
+    obj["deleted"] = deleted;
+
+    QJsonDocument doc(obj);
+    QByteArray json = doc.toJson();
 
     for (auto it = m_registeredClients.begin(); it != m_registeredClients.end(); ++it) {
         const QString &clientIp = it.key();
@@ -448,7 +461,31 @@ void SyncServer::notifyUpdate(const QString &relativePath)
 
         connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
 
-        socket->connectToHost(clientAddr, 8080);  // используем порт клиента
+        socket->connectToHost(clientAddr, 9090);  // порт клиента
     }
+}
+
+void SyncServer::handleDelete(QTcpSocket *socket, const QMap<QString, QString> &headers)
+{
+    QString relativePath = headers.value("x-file-path");
+    if (relativePath.isEmpty()) {
+        sendHttpResponse(socket, 400, "Bad Request", "Missing x-file-path header");
+        return;
+    }
+
+    QString fullPath = m_syncDirectory + "/" + relativePath;
+    QFile file(fullPath);
+
+    if (file.exists() && !file.remove()) {
+        sendHttpResponse(socket, 500, "Internal Server Error", "Failed to delete file");
+        return;
+    }
+
+    m_fileEntries.remove(relativePath);
+    qDebug() << "Deleted file:" << relativePath;
+
+    sendHttpResponse(socket, 200, "OK", "File deleted");
+
+    notifyUpdate(relativePath, /*deleted=*/true);
 }
 
