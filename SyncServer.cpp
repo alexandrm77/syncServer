@@ -31,8 +31,8 @@ SyncServer::SyncServer(QObject *parent)
         // Обнови внутреннюю структуру, если есть
         m_fileEntries[entry.path] = entry;
 
-        // Рассылаем всем зарегистрированным клиентам обновление
-        //notifyClientsAboutChange(entry);
+        // Уведомить клиентов
+        notifyUpdate(entry.path);
     });
 
     connect(m_monitor, &FileMonitor::fileRemoved, this, [=](const QString &path){
@@ -40,8 +40,8 @@ SyncServer::SyncServer(QObject *parent)
 
         m_fileEntries.remove(path);
 
-        // Рассылаем клиентам, что файл удалён
-        //notifyClientsAboutRemoval(path);
+        // Уведомить клиентов
+        notifyUpdate(path);
     });
 
     m_monitor->start();
