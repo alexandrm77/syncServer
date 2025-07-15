@@ -4,6 +4,7 @@
 #include <QFileSystemWatcher>
 #include <QHash>
 #include <QDir>
+#include <QTimer>
 #include "FileEntry.h"
 
 class FileMonitor : public QObject
@@ -27,6 +28,7 @@ private:
     QString m_directory;
     QFileSystemWatcher m_watcher;
     QHash<QString, FileEntry> m_currentFiles;
+    QTimer m_rescanTimer;
 
     void rescan();                      // полная пересборка
     void updateWatchList();            // пересчитать файлы и каталоги

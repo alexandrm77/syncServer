@@ -8,6 +8,10 @@ FileMonitor::FileMonitor(const QString &directory, QObject *parent)
 {
     connect(&m_watcher, &QFileSystemWatcher::fileChanged, this, &FileMonitor::onFileChanged);
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, &FileMonitor::onDirectoryChanged);
+
+    m_rescanTimer.setInterval(5000);
+    connect(&m_rescanTimer, &QTimer::timeout, this, &FileMonitor::rescan);
+    m_rescanTimer.start();
 }
 
 QList<FileEntry> FileMonitor::currentFiles() const
