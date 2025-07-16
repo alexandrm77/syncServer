@@ -1,6 +1,7 @@
 #include "FileMonitor.h"
 #include <QDirIterator>
 #include <QFileInfo>
+#include <QDateTime>
 #include <QDebug>
 
 FileMonitor::FileMonitor(const QString &directory, QObject *parent)
@@ -89,7 +90,7 @@ FileEntry FileMonitor::getFileEntry(const QString &fullPath) const
     QFileInfo info(fullPath);
     QString relativePath = QDir(m_directory).relativeFilePath(fullPath);
     QString type = info.suffix();
-    int version = static_cast<int>(info.lastModified().toSecsSinceEpoch());
+    int version = static_cast<int>(info.lastModified().toMSecsSinceEpoch() / 1000);
     return FileEntry(relativePath, type, version);
 }
 

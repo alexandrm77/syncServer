@@ -1,6 +1,5 @@
 #include "DiscoveryClient.h"
 #include <QTimer>
-#include <QNetworkDatagram>
 #include <QUdpSocket>
 #include <QDebug>
 
@@ -22,10 +21,17 @@ void DiscoveryClient::startDiscovery()
 void DiscoveryClient::handleResponse()
 {
     while (m_socket->hasPendingDatagrams()) {
-        QNetworkDatagram datagram = m_socket->receiveDatagram();
-        if (datagram.data() == "DISCOVER_RESPONSE") {
-            qDebug() << "Received DISCOVER_RESPONSE from" << datagram.senderAddress();
-            emit serverDiscovered(datagram.senderAddress());
+        QByteArray buffer;
+        buffer.resize(m_socket->pendingDatagramSize());
+
+        QHostAddress sender;
+        quint16 senderPort;
+
+        m_socket->readDatagram(buffer.data(), buffer.size(), &sender, &senderPort);
+
+        if (buffer == "DISCOVER_RESPONSE") {
+            qDebug() << "Received DISCOVER_RESPONSE from" << sender.toString();
+            emit serverDiscovered(sender);
         }
     }
 }

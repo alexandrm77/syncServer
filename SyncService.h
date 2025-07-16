@@ -17,6 +17,7 @@ public:
 
 private slots:
     void handleNewConnection();
+    void handleSocketError(QAbstractSocket::SocketError err);
 
 private:
     QHostAddress m_serverAddress;

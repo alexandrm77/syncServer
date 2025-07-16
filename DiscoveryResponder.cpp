@@ -1,5 +1,4 @@
 #include "DiscoveryResponder.h"
-#include <QNetworkDatagram>
 #include <QUdpSocket>
 #include <QDebug>
 
@@ -16,10 +15,17 @@ DiscoveryResponder::DiscoveryResponder(QObject *parent)
 void DiscoveryResponder::handleDatagram()
 {
     while (m_socket->hasPendingDatagrams()) {
-        QNetworkDatagram datagram = m_socket->receiveDatagram();
-        if (datagram.data() == "DISCOVER_REQUEST") {
-            qDebug() << "Received DISCOVER_REQUEST from" << datagram.senderAddress();
-            m_socket->writeDatagram("DISCOVER_RESPONSE", datagram.senderAddress(), datagram.senderPort());
+        QByteArray buffer;
+        buffer.resize(m_socket->pendingDatagramSize());
+
+        QHostAddress sender;
+        quint16 senderPort;
+
+        m_socket->readDatagram(buffer.data(), buffer.size(), &sender, &senderPort);
+
+        if (buffer == "DISCOVER_REQUEST") {
+            qDebug() << "Received DISCOVER_REQUEST from" << sender.toString() << ":" << senderPort;
+            m_socket->writeDatagram("DISCOVER_RESPONSE", sender, senderPort);
         }
     }
 }

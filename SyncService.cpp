@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonDocument>
+#include <QUrl>
 
 SyncService::SyncService(const QHostAddress &serverAddress,
                          quint16 serverPort,
@@ -122,11 +123,18 @@ void SyncService::sendSyncListToServer(const QList<FileEntry> &files)
     });
 
     connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
-    connect(socket, &QTcpSocket::errorOccurred, [=](QAbstractSocket::SocketError err) {
-        qWarning() << "SyncService: socket error:" << err << socket->errorString();
-    });
+    connect(socket, SIGNAL(error(QAbstractSocket::SocketError)),
+            this, SLOT(handleSocketError(QAbstractSocket::SocketError)));
 
     socket->connectToHost(m_serverAddress, m_serverPort);
+}
+
+void SyncService::handleSocketError(QAbstractSocket::SocketError err)
+{
+    QTcpSocket *socket = qobject_cast<QTcpSocket *>(sender());
+    if (socket) {
+        qWarning() << "SyncService: socket error:" << err << socket->errorString();
+    }
 }
 
 void SyncService::uploadFile(const FileEntry &entry)

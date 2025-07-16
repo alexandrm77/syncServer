@@ -63,11 +63,14 @@ int main(int argc, char *argv[])
                 syncService->start();
             });
 
-            QObject::connect(socket, &QTcpSocket::errorOccurred, [=](QAbstractSocket::SocketError err) {
-                if (err != QAbstractSocket::RemoteHostClosedError) {
-                    qWarning() << "Socket error:" << err << socket->errorString();
+            QObject::connect(socket,
+                static_cast<void (QTcpSocket::*)(QAbstractSocket::SocketError)>(&QTcpSocket::error),
+                [socket](QAbstractSocket::SocketError err) {
+                    if (err != QAbstractSocket::RemoteHostClosedError) {
+                        qWarning() << "Socket error:" << err << socket->errorString();
+                    }
                 }
-            });
+            );
 
             QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
 
