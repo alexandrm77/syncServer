@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=SyncServer
+Exec=SyncServer
+Icon=icon-syncserver
+X-MeeGo-Logical-Id=SyncServer
+X-Osso-Service=ru.auroraos.SyncServer
+X-Maemo-Service=ru.auroraos.SyncServer
+Categories=Utility;
+
+[X-Application]
+Permissions=Internet
+
+[X-Aurora-Application]
+AllowNetworkAccess=true
+AllowTcpListener=true
+
