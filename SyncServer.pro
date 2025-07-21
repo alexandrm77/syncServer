@@ -10,15 +10,11 @@ INCLUDEPATH += $$PWD
 
 SOURCES += \
     main.cpp \
-    DiscoveryClient.cpp \
-    DiscoveryResponder.cpp \
     FileMonitor.cpp \
     SyncServer.cpp \
     SyncService.cpp
 
 HEADERS += \
-    DiscoveryClient.h \
-    DiscoveryResponder.h \
     FileEntry.h \
     FileMonitor.h \
     SyncServer.h \
