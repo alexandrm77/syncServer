@@ -74,7 +74,16 @@ void SyncService::discoverAndStart(QObject *parent)
     auto socket = new QUdpSocket(parent);
     socket->bind(QHostAddress::AnyIPv4, 0, QUdpSocket::ShareAddress);
 
-    QObject::connect(socket, &QUdpSocket::readyRead, [socket, parent]() {
+    auto timer = new QTimer(parent);
+    timer->setInterval(3000); // каждые 3 секунды
+
+    QObject::connect(timer, &QTimer::timeout, [socket]() {
+        QByteArray message = "DISCOVER_REQUEST";
+        socket->writeDatagram(message, QHostAddress::Broadcast, 45454);
+        qDebug() << "Broadcasted DISCOVER_REQUEST";
+    });
+
+    QObject::connect(socket, &QUdpSocket::readyRead, [socket, parent, timer]() {
         while (socket->hasPendingDatagrams()) {
             QByteArray buffer;
             buffer.resize(socket->pendingDatagramSize());
@@ -85,6 +94,9 @@ void SyncService::discoverAndStart(QObject *parent)
 
             if (buffer == "DISCOVER_RESPONSE") {
                 qDebug() << "Discovered SyncServer at" << sender.toString();
+
+                timer->stop();
+                timer->deleteLater();
 
                 auto tcpSocket = new QTcpSocket(parent);
                 QObject::connect(tcpSocket, &QTcpSocket::connected, [tcpSocket]() {
@@ -99,10 +111,10 @@ void SyncService::discoverAndStart(QObject *parent)
                     auto syncService = new SyncService(sender, 8080, parent);
                     syncService->start();
 
+                    QObject::connect(tcpSocket, &QTcpSocket::disconnected, tcpSocket, &QObject::deleteLater);
                     tcpSocket->disconnectFromHost();
                 });
 
-                QObject::connect(tcpSocket, &QTcpSocket::disconnected, tcpSocket, &QObject::deleteLater);
                 tcpSocket->connectToHost(sender, 8080);
 
                 QObject::disconnect(socket, nullptr, nullptr, nullptr);
@@ -112,10 +124,10 @@ void SyncService::discoverAndStart(QObject *parent)
         }
     });
 
-    // Send DISCOVER_REQUEST
+    timer->start();
     QByteArray message = "DISCOVER_REQUEST";
     socket->writeDatagram(message, QHostAddress::Broadcast, 45454);
-    qDebug() << "Broadcasted DISCOVER_REQUEST";
+    qDebug() << "Broadcasted initial DISCOVER_REQUEST";
 }
 
 void SyncService::sendPing()
