@@ -11,10 +11,16 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonDocument>
+#include <QUdpSocket>
 
 SyncServer::SyncServer(QObject *parent)
-    : QObject(parent)
+    : QObject(parent), m_udpSocket(new QUdpSocket(this))
 {
+    if (!m_udpSocket->bind(45454, QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint)) {
+        qWarning() << "Failed to bind UDP socket";
+    }
+    connect(m_udpSocket, &QUdpSocket::readyRead, this, &SyncServer::handleDatagram);
+
     connect(&m_server, &QTcpServer::newConnection, this, &SyncServer::handleNewConnection);
 
     m_cleanupTimer.setInterval(60 * 1000); // раз в минуту
@@ -63,6 +69,24 @@ bool SyncServer::listen(const QHostAddress &address, quint16 port)
         qWarning() << "Failed to listen:" << m_server.errorString();
     }
     return ok;
+}
+
+void SyncServer::handleDatagram()
+{
+    while (m_udpSocket->hasPendingDatagrams()) {
+        QByteArray buffer;
+        buffer.resize(m_udpSocket->pendingDatagramSize());
+
+        QHostAddress sender;
+        quint16 senderPort;
+
+        m_udpSocket->readDatagram(buffer.data(), buffer.size(), &sender, &senderPort);
+
+        if (buffer == "DISCOVER_REQUEST") {
+            qDebug() << "Received DISCOVER_REQUEST from" << sender.toString() << ":" << senderPort;
+            m_udpSocket->writeDatagram("DISCOVER_RESPONSE", sender, senderPort);
+        }
+    }
 }
 
 void SyncServer::stop()

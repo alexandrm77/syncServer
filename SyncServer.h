@@ -10,6 +10,7 @@
 #include "FileEntry.h"
 
 class QTcpSocket;
+class QUdpSocket;
 class FileMonitor;
 class SyncServer : public QObject
 {
@@ -28,6 +29,7 @@ private slots:
     void handleClientReadyRead();
     void handleClientDisconnected();
     void cleanupInactiveClients();
+    void handleDatagram();
 
 private:
     QTcpServer m_server;
@@ -40,6 +42,7 @@ private:
     // актуальное состояние файлов сервера
     QHash<QString, FileEntry> m_fileEntries;
     QString m_syncDirectory;
+    QUdpSocket *m_udpSocket;
 
     void handleClient(QTcpSocket *clientSocket);
     void handleClientRequest(QTcpSocket *socket, const QByteArray &data,

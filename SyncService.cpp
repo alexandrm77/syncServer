@@ -1,6 +1,7 @@
 #include "SyncService.h"
 #include "FileMonitor.h"
 #include <QTcpSocket>
+#include <QUdpSocket>
 #include <QDebug>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -66,6 +67,55 @@ void SyncService::start()
         connect(&m_server, &QTcpServer::newConnection,
                 this, &SyncService::handleNewConnection);
     }
+}
+
+void SyncService::discoverAndStart(QObject *parent)
+{
+    auto socket = new QUdpSocket(parent);
+    socket->bind(QHostAddress::AnyIPv4, 0, QUdpSocket::ShareAddress);
+
+    QObject::connect(socket, &QUdpSocket::readyRead, [socket, parent]() {
+        while (socket->hasPendingDatagrams()) {
+            QByteArray buffer;
+            buffer.resize(socket->pendingDatagramSize());
+
+            QHostAddress sender;
+            quint16 senderPort;
+            socket->readDatagram(buffer.data(), buffer.size(), &sender, &senderPort);
+
+            if (buffer == "DISCOVER_RESPONSE") {
+                qDebug() << "Discovered SyncServer at" << sender.toString();
+
+                auto tcpSocket = new QTcpSocket(parent);
+                QObject::connect(tcpSocket, &QTcpSocket::connected, [tcpSocket]() {
+                    QByteArray req = "GET /register HTTP/1.1\r\nHost: server\r\nConnection: close\r\n\r\n";
+                    tcpSocket->write(req);
+                });
+
+                QObject::connect(tcpSocket, &QTcpSocket::readyRead, [tcpSocket, sender, parent]() {
+                    QByteArray response = tcpSocket->readAll();
+                    qDebug() << "Response:\n" << response;
+
+                    auto syncService = new SyncService(sender, 8080, parent);
+                    syncService->start();
+
+                    tcpSocket->disconnectFromHost();
+                });
+
+                QObject::connect(tcpSocket, &QTcpSocket::disconnected, tcpSocket, &QObject::deleteLater);
+                tcpSocket->connectToHost(sender, 8080);
+
+                QObject::disconnect(socket, nullptr, nullptr, nullptr);
+                socket->deleteLater();
+                return;
+            }
+        }
+    });
+
+    // Send DISCOVER_REQUEST
+    QByteArray message = "DISCOVER_REQUEST";
+    socket->writeDatagram(message, QHostAddress::Broadcast, 45454);
+    qDebug() << "Broadcasted DISCOVER_REQUEST";
 }
 
 void SyncService::sendPing()
