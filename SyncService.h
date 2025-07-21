@@ -19,6 +19,10 @@ public:
 private slots:
     void handleNewConnection();
     void handleSocketError(QAbstractSocket::SocketError err);
+    void onPingSocketError(QAbstractSocket::SocketError socketError);
+
+signals:
+    void connectionLost();
 
 private:
     QHostAddress m_serverAddress;

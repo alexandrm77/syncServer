@@ -110,6 +110,11 @@ void SyncService::discoverAndStart(QObject *parent)
 
                     auto syncService = new SyncService(sender, 8080, parent);
                     syncService->start();
+                    QObject::connect(syncService, &SyncService::connectionLost, parent, [syncService, parent]() {
+                        syncService->deleteLater();
+                        qWarning() << "Connection lost. Rediscovering...";
+                        SyncService::discoverAndStart(parent);
+                    });
 
                     QObject::connect(tcpSocket, &QTcpSocket::disconnected, tcpSocket, &QObject::deleteLater);
                     tcpSocket->disconnectFromHost();
@@ -141,8 +146,26 @@ void SyncService::sendPing()
         qDebug() << "Response:\n" << response;
     });
     connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
+    connect(socket, SIGNAL(error(QAbstractSocket::SocketError)),
+            this, SLOT(onPingSocketError(QAbstractSocket::SocketError)));
     socket->connectToHost(m_serverAddress, m_serverPort);
 }
+
+void SyncService::onPingSocketError(QAbstractSocket::SocketError socketError)
+{
+    QTcpSocket *socket = qobject_cast<QTcpSocket *>(sender());
+    if (!socket)
+        return;
+
+    socket->deleteLater();
+
+    if (socketError == QAbstractSocket::ConnectionRefusedError ||
+        socketError == QAbstractSocket::HostNotFoundError) {
+        qWarning() << "Ping failed with error:" << socket->errorString();
+        emit connectionLost();
+    }
+}
+
 
 void SyncService::sendSyncListToServer(const QList<FileEntry> &files)
 {
