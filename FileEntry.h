@@ -3,10 +3,16 @@
 #include <QString>
 #include <QJsonObject>
 
+struct FileDiff {
+    QString path;
+    int version;
+    QString type; // "upload", "download", "delete"
+};
+
 struct FileEntry
 {
     QString path;
-    QString type;
+    QString type; // "file", "directory", "deleted"
     int version;
 
     FileEntry() = default;

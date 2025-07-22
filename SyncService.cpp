@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonDocument>
+#include <QDirIterator>
 #include <QUrl>
 
 SyncService::SyncService(const QHostAddress &serverAddress,
@@ -56,6 +57,7 @@ SyncService::SyncService(const QHostAddress &serverAddress,
 void SyncService::start()
 {
     qDebug() << "SyncService started";
+    synchronizeWithServer();
     m_pingTimer.start();
     sendPing(); // первый ping сразу
 
@@ -67,6 +69,35 @@ void SyncService::start()
         connect(&m_server, &QTcpServer::newConnection,
                 this, &SyncService::handleNewConnection);
     }
+}
+
+void SyncService::synchronizeWithServer()
+{
+    qDebug() << "Starting initial sync with server...";
+
+    QList<FileEntry> localEntries = scanLocalDirectory();
+    sendSyncListToServer(localEntries);
+}
+
+QList<FileEntry> SyncService::scanLocalDirectory()
+{
+    QList<FileEntry> entries;
+
+    QDirIterator it(m_syncDirectory, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    const int basePathLength = m_syncDirectory.length() + 1; // для получения относительного пути
+
+    while (it.hasNext()) {
+        it.next();
+        const QFileInfo file = it.fileInfo();
+
+        FileEntry entry;
+        entry.path = file.filePath().mid(basePathLength); // относительный путь от корня синхронизации
+        entry.version = static_cast<int>(file.lastModified().toMSecsSinceEpoch() / 1000);
+        entry.type = "file";
+        entries.append(entry);
+    }
+
+    return entries;
 }
 
 void SyncService::discoverAndStart(QObject *parent)
@@ -199,10 +230,21 @@ void SyncService::sendSyncListToServer(const QList<FileEntry> &files)
         qDebug() << "[SyncService] Response to sync-list:\n" << response;
 
         if (response.contains("200 OK")) {
-            // Сервер принял — загружаем файл
-            for (const FileEntry &entry : files) {
-                if (entry.type != "deleted")  // Только для существующих
-                    uploadFile(entry);
+            QVector<FileDiff> diffs = parseDiffs(response);
+            if (!diffs.isEmpty()) {
+                onResponse(diffs);
+            } else {
+                if (response.contains("Up to date")) {
+                    return;
+                }
+
+                // fallback: сервер ничего не вернул, загружаем сами
+                qDebug()<<"fallback: сервер ничего не вернул, загружаем сами";
+                for (const FileEntry &entry : files) {
+                    if (entry.type != "deleted")
+                        qDebug()<<Q_FUNC_INFO;
+                        uploadFile(entry);
+                }
             }
         }
     });
@@ -212,6 +254,61 @@ void SyncService::sendSyncListToServer(const QList<FileEntry> &files)
             this, SLOT(handleSocketError(QAbstractSocket::SocketError)));
 
     socket->connectToHost(m_serverAddress, m_serverPort);
+}
+
+QVector<FileDiff> SyncService::parseDiffs(const QByteArray& response)
+{
+    QVector<FileDiff> diffs;
+
+    // Отделяем тело от заголовков
+    int headerEndIndex = response.indexOf("\r\n\r\n");
+    if (headerEndIndex == -1)
+        return diffs;
+
+    QByteArray body = response.mid(headerEndIndex + 4);  // после \r\n\r\n
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+
+    if (parseError.error != QJsonParseError::NoError || !doc.isArray())
+        return diffs;
+
+    QJsonArray arr = doc.array();
+    for (const QJsonValue& val : arr) {
+        QJsonObject obj = val.toObject();
+
+        FileDiff diff;
+        diff.path = obj["path"].toString();
+        diff.version = obj["version"].toString().toLongLong();
+        diff.type = obj["type"].toString();  // "upload" или "download"
+        diffs.append(diff);
+    }
+
+    return diffs;
+}
+
+void SyncService::onResponse(const QVector<FileDiff> &diffs)
+{
+    qDebug()<<Q_FUNC_INFO;
+    for (const FileDiff &diff : diffs) {
+        if (diff.type == "download") {
+            getFile(diff.path);
+        } else if (diff.type == "upload") {
+            FileEntry entry;
+            entry.path = diff.path;
+            entry.version = diff.version;
+            entry.type = "file";
+            uploadFile(entry);
+        } else if (diff.type == "delete") {
+            qDebug() << "Deleting file per server instruction:" << diff.path;
+            QString fullPath = m_syncDirectory + "/" + diff.path;
+            QFile::remove(fullPath);
+
+            // добавляем в список игнорирования
+            m_ignoreNextChange.insert(diff.path);
+        } else {
+            qWarning() << "Unknown diff type:" << diff.type;
+        }
+    }
 }
 
 void SyncService::handleSocketError(QAbstractSocket::SocketError err)

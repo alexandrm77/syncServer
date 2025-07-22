@@ -39,4 +39,8 @@ private:
     void getFile(const QString &relativePath);
     void handleNotify(QTcpSocket *socket, const QByteArray &body);
     void sendDeleteRequest(const QString &relativePath);
+    void synchronizeWithServer();
+    QList<FileEntry> scanLocalDirectory();
+    QVector<FileDiff> parseDiffs(const QByteArray& response);
+    void onResponse(const QVector<FileDiff> &diffs);
 };

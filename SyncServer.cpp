@@ -243,17 +243,89 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
         return;
     }
 
-    QJsonArray arr = doc.array();
+    QJsonArray clientArray = doc.array();
     bool allAccepted = true;
+    bool isFullSync = true;
 
-    for (const QJsonValue &val : arr) {
+    QHash<QString, FileEntry> clientEntries;
+
+    // Разбор входящих данных
+    for (const QJsonValue &val : clientArray) {
         if (!val.isObject())
             continue;
 
         QJsonObject obj = val.toObject();
-        QString path = obj["path"].toString();
-        QString type = obj["type"].toString();
-        quint64 version = obj["version"].toString().toULongLong();
+        FileEntry entry;
+        entry.path = obj["path"].toString();
+        entry.type = obj["type"].toString();
+        entry.version = obj["version"].toString().toULongLong();
+
+        if (entry.type != "file")
+            isFullSync = false;
+
+        clientEntries[entry.path] = entry;
+    }
+
+    if (isFullSync) {
+        // Полная синхронизация — сравниваем и отправляем отличия
+        QJsonArray diffs;
+
+        for (auto it = m_fileEntries.begin(); it != m_fileEntries.end(); ++it) {
+            const QString &path = it.key();
+            const FileEntry &serverEntry = it.value();
+
+            if (!clientEntries.contains(path)) {
+                // Файл есть на сервере, но нет у клиента
+                QJsonObject diff;
+                diff["path"] = path;
+                diff["type"] = "download";
+                diff["version"] = QString::number(serverEntry.version);
+                diffs.append(diff);
+            } else {
+                const FileEntry &clientEntry = clientEntries[path];
+                if (clientEntry.version != serverEntry.version) {
+                    // Версии у сервера и клиента отличаются. Нужно обновить
+                    QJsonObject diff;
+                    diff["path"] = path;
+                    diff["type"] = clientEntry.version < serverEntry.version
+                                   ? "download" : "upload";
+                    diff["version"] = QString::number(serverEntry.version);
+                    diffs.append(diff);
+                }
+            }
+        }
+
+        // Теперь найдём удалённые файлы (были у клиента, но нет на сервере)
+        for (auto it = clientEntries.begin(); it != clientEntries.end(); ++it) {
+            const QString &path = it.key();
+            const FileEntry &clientEntry = it.value();
+
+            if (!m_fileEntries.contains(path)) {
+                // Файл есть у клиента, но нет на сервере
+                QJsonObject diff;
+                diff["path"] = path;
+                diff["type"] = "delete";
+                diff["version"] = QString::number(clientEntry.version);
+                diffs.append(diff);
+            }
+        }
+
+        if (!diffs.isEmpty()) {
+            QJsonDocument responseDoc(diffs);
+            sendHttpResponse(socket, 200, "OK", responseDoc.toJson(QJsonDocument::Compact));
+        } else {
+            sendHttpResponse(socket, 200, "OK", QString("Up to date"));
+        }
+
+        socket->disconnectFromHost();
+        return;
+    }
+
+    // Частичный список (изменённые или удалённые файлы)
+    for (const FileEntry &entry : clientEntries) {
+        const QString &path = entry.path;
+        const QString &type = entry.type;
+        const quint64 version = entry.version;
 
         const bool exists = m_fileEntries.contains(path);
         const quint64 currentVer = exists ? m_fileEntries[path].version : 0;
@@ -266,15 +338,14 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
 
             qDebug() << "[SyncServer] Deleted:" << path;
 
-            // Отправляем уведомление об удалении
+            // Уведомление
             notifyUpdate(path, true);
         }
         else if (!exists || version > currentVer) {
             qDebug() << "[SyncServer] Accept newer file:" << path << "ver:" << version;
-            // Примем: возможно, позже клиент загрузит тело
-            // Не обновляем m_fileEntries пока не получим файл
+            // Примем — но ждём загрузки тела
         } else {
-            qDebug() << "[SyncServer] Reject outdated file:" << path;
+            qDebug() << "[SyncServer] Reject outdated file:" << path << "ver:" << version;
             allAccepted = false;
         }
     }
