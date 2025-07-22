@@ -28,7 +28,7 @@ private:
     QHostAddress m_serverAddress;
     quint16 m_serverPort;
     QTimer m_pingTimer;
-    QString m_syncDirectory;
+    QStringList m_syncDirectories;
     FileMonitor *m_monitor = nullptr;
     QTcpServer m_server;
     QSet<QString> m_ignoreNextChange;
@@ -40,7 +40,8 @@ private:
     void handleNotify(QTcpSocket *socket, const QByteArray &body);
     void sendDeleteRequest(const QString &relativePath);
     void synchronizeWithServer();
-    QList<FileEntry> scanLocalDirectory();
+    QList<FileEntry> scanLocalDirectories();
     QVector<FileDiff> parseDiffs(const QByteArray& response);
     void onResponse(const QVector<FileDiff> &diffs);
+    QString resolveFullPath(const QString &relativePath) const;
 };

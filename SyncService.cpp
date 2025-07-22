@@ -17,8 +17,9 @@ SyncService::SyncService(const QHostAddress &serverAddress,
     m_pingTimer.setInterval(30 * 1000); // 30 секунд
     connect(&m_pingTimer, &QTimer::timeout, this, &SyncService::sendPing);
 
-    m_syncDirectory = QDir::homePath()+ "/test/client";
-    m_monitor = new FileMonitor(m_syncDirectory, this);
+    m_syncDirectories.append(QDir::homePath() + "/test/client");
+    m_syncDirectories.append(QDir::homePath() + "/test/client2");
+    m_monitor = new FileMonitor(m_syncDirectories, this);
 
     connect(m_monitor, &FileMonitor::fileChanged, this, [=](const FileEntry &entry){
         qDebug() << "Изменён/добавлен:" << entry.path << entry.version;
@@ -75,30 +76,34 @@ void SyncService::synchronizeWithServer()
 {
     qDebug() << "Starting initial sync with server...";
 
-    QList<FileEntry> localEntries = scanLocalDirectory();
+    QList<FileEntry> localEntries = scanLocalDirectories();
     sendSyncListToServer(localEntries);
 }
 
-QList<FileEntry> SyncService::scanLocalDirectory()
+QList<FileEntry> SyncService::scanLocalDirectories()
 {
     QList<FileEntry> entries;
 
-    QDirIterator it(m_syncDirectory, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
-    const int basePathLength = m_syncDirectory.length() + 1; // для получения относительного пути
+    for (const QString &dirPath : m_syncDirectories) {
+        QDir root(dirPath);
+        QDirIterator it(dirPath, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+        const int basePathLength = root.absolutePath().length() + 1;
 
-    while (it.hasNext()) {
-        it.next();
-        const QFileInfo file = it.fileInfo();
+        while (it.hasNext()) {
+            it.next();
+            const QFileInfo file = it.fileInfo();
 
-        FileEntry entry;
-        entry.path = file.filePath().mid(basePathLength); // относительный путь от корня синхронизации
-        entry.version = static_cast<int>(file.lastModified().toMSecsSinceEpoch() / 1000);
-        entry.type = "file";
-        entries.append(entry);
+            FileEntry entry;
+            entry.path = root.dirName() + "/" + file.filePath().mid(basePathLength); // добавим относительность
+            entry.version = static_cast<int>(file.lastModified().toMSecsSinceEpoch() / 1000);
+            entry.type = "file";
+            entries.append(entry);
+        }
     }
 
     return entries;
 }
+
 
 void SyncService::discoverAndStart(QObject *parent)
 {
@@ -286,6 +291,21 @@ QVector<FileDiff> SyncService::parseDiffs(const QByteArray& response)
     return diffs;
 }
 
+QString SyncService::resolveFullPath(const QString &relativePath) const
+{
+    QString result;
+
+    for (const QString &dir : m_syncDirectories) {
+        QString fullPath = dir + "/" + relativePath;
+        if (QFile::exists(fullPath) || QFileInfo(fullPath).absoluteDir().exists()) {
+            result = fullPath;
+            break;
+        }
+    }
+
+    return result;
+}
+
 void SyncService::onResponse(const QVector<FileDiff> &diffs)
 {
     qDebug()<<Q_FUNC_INFO;
@@ -300,7 +320,7 @@ void SyncService::onResponse(const QVector<FileDiff> &diffs)
             uploadFile(entry);
         } else if (diff.type == "delete") {
             qDebug() << "Deleting file per server instruction:" << diff.path;
-            QString fullPath = m_syncDirectory + "/" + diff.path;
+            QString fullPath = resolveFullPath(diff.path);
             QFile::remove(fullPath);
 
             // добавляем в список игнорирования
@@ -321,7 +341,7 @@ void SyncService::handleSocketError(QAbstractSocket::SocketError err)
 
 void SyncService::uploadFile(const FileEntry &entry)
 {
-    QFile file(m_syncDirectory + "/" + entry.path);
+    QFile file(resolveFullPath(entry.path));
     if (!file.open(QIODevice::ReadOnly)) {
         qWarning() << "Failed to open file for upload:" << entry.path;
         return;
@@ -379,7 +399,7 @@ void SyncService::getFile(const QString &relativePath)
         QByteArray body = buffer->mid(headerEndIndex + 4);
 
         // Сохраняем файл
-        QString fullPath = m_syncDirectory + "/" + relativePath;
+        QString fullPath = resolveFullPath(relativePath);
         QDir().mkpath(QFileInfo(fullPath).absolutePath());
         QFile file(fullPath);
         if (file.open(QIODevice::WriteOnly)) {
@@ -416,7 +436,7 @@ void SyncService::handleNotify(QTcpSocket *socket, const QByteArray &body)
 
     if (deleted) {
         qDebug() << "Received deletion notification for" << path;
-        QString fullPath = m_syncDirectory + "/" + path;
+        QString fullPath = resolveFullPath(path);
         QFile::remove(fullPath);
 
         // Добавляем в список игнорирования

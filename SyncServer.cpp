@@ -28,8 +28,9 @@ SyncServer::SyncServer(QObject *parent)
     m_cleanupTimer.start();
 
     // Инициализация мониторинга файлов
-    m_syncDirectory = QDir::homePath()+ "/test/serv";  // Папка сервера
-    m_monitor = new FileMonitor(m_syncDirectory, this);
+    m_syncDirectories.append(QDir::homePath() + "/test/serv");
+    m_syncDirectories.append(QDir::homePath() + "/test/serv2");
+    m_monitor = new FileMonitor(m_syncDirectories, this);
 
     connect(m_monitor, &FileMonitor::fileChanged, this, [=](const FileEntry &entry){
         qDebug() << "[SERVER] Изменён/добавлен:" << entry.path << entry.version;
@@ -332,7 +333,7 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
 
         if (type == "deleted") {
             // Принудительно удаляем файл
-            QString fullPath = m_syncDirectory + "/" + path;
+            QString fullPath = resolveFullPath(path);
             QFile::remove(fullPath);
             m_fileEntries.remove(path);
 
@@ -403,7 +404,7 @@ void SyncServer::handleDownloadRequest(QTcpSocket *socket, const QString &fileNa
 
 void SyncServer::handleDownload(QTcpSocket *socket, const QString &relativePath)
 {
-    QString fullPath = m_syncDirectory + "/" + relativePath;
+    QString fullPath = resolveFullPath(relativePath);
     QFile file(fullPath);
 
     if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
@@ -443,7 +444,7 @@ void SyncServer::handleUpload(QTcpSocket *socket,
     }
 
     // Версия новее — сохраняем
-    QString fullPath = m_syncDirectory + "/" + relativePath;
+    QString fullPath = resolveFullPath(relativePath);
     QDir().mkpath(QFileInfo(fullPath).absolutePath());
 
     QFile file(fullPath);
@@ -589,7 +590,7 @@ void SyncServer::handleDelete(QTcpSocket *socket, const QMap<QString, QString> &
         return;
     }
 
-    QString fullPath = m_syncDirectory + "/" + relativePath;
+    QString fullPath = resolveFullPath(relativePath);
     QFile file(fullPath);
 
     if (file.exists() && !file.remove()) {
@@ -605,3 +606,17 @@ void SyncServer::handleDelete(QTcpSocket *socket, const QMap<QString, QString> &
     notifyUpdate(relativePath, /*deleted=*/true);
 }
 
+QString SyncServer::resolveFullPath(const QString &relativePath) const
+{
+    QString result;
+
+    for (const QString &dir : m_syncDirectories) {
+        QString fullPath = dir + "/" + relativePath;
+        if (QFile::exists(fullPath) || QFileInfo(fullPath).absoluteDir().exists()) {
+            result = fullPath;
+            break;
+        }
+    }
+
+    return result;
+}

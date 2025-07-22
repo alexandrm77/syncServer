@@ -41,7 +41,7 @@ private:
     FileMonitor *m_monitor = nullptr;
     // актуальное состояние файлов сервера
     QHash<QString, FileEntry> m_fileEntries;
-    QString m_syncDirectory;
+    QStringList m_syncDirectories;
     QUdpSocket *m_udpSocket;
 
     void handleClient(QTcpSocket *clientSocket);
@@ -70,4 +70,5 @@ private:
                           const QByteArray &body,
                           const QString &contentType = "application/octet-stream");
     void notifyUpdate(const QString &relativePath, bool deleted = false);
+    QString resolveFullPath(const QString &relativePath) const;
 };
