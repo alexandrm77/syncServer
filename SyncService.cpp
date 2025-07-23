@@ -7,6 +7,7 @@
 #include <QJsonObject>
 #include <QJsonDocument>
 #include <QDirIterator>
+#include <QDateTime>
 #include <QUrl>
 
 static QString makeKey(int rootIndex, const QString &relativePath) {
@@ -100,8 +101,7 @@ QList<FileEntry> SyncService::scanLocalDirectories()
             const QFileInfo file = it.fileInfo();
 
             FileEntry entry;
-            // Формируем путь вида "fold1/relative/path"
-            entry.path = root.dirName() + "/" + file.filePath().mid(basePathLength);
+            entry.path = file.filePath().mid(basePathLength);
             entry.rootIndex = rootIndex;
             entry.version = (file.lastModified().toMSecsSinceEpoch() / 1000);
             entry.type = "file";

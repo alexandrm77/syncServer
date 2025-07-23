@@ -29,6 +29,7 @@ private:
     QFileSystemWatcher m_watcher;
     QHash<QString, FileEntry> m_currentFiles;
     QTimer m_rescanTimer;
+    bool m_firstScan = true;
 
     void rescan();
     void updateWatchList();

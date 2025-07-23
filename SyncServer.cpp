@@ -256,7 +256,7 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
         entry.path = obj["path"].toString();
         entry.type = obj["type"].toString();
         entry.version = obj["version"].toString().toULongLong();
-        entry.rootIndex = obj["rootIndex"].toInt();
+        entry.rootIndex = obj["rootIndex"].toString().toInt();
 
         if (entry.type != "file")
             isFullSync = false;
@@ -267,7 +267,6 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
     if (isFullSync) {
         // Полная синхронизация — сравниваем и отправляем отличия
         QJsonArray diffs;
-
         for (auto it = m_fileEntries.begin(); it != m_fileEntries.end(); ++it) {
             const auto &key = it.key();
             const FileEntry &serverEntry = it.value();

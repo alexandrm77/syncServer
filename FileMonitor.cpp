@@ -44,7 +44,7 @@ void FileMonitor::rescan()
             newFiles[key] = entry;
 
             // Новый или обновлённый
-            if (!m_currentFiles.contains(key) || m_currentFiles[key].version != entry.version) {
+            if (!m_firstScan && (!m_currentFiles.contains(key) || m_currentFiles[key].version != entry.version)) {
                 emit fileChanged(entry);
             }
         }
@@ -58,6 +58,10 @@ void FileMonitor::rescan()
     }
 
     m_currentFiles = std::move(newFiles);
+
+    if (m_firstScan) {
+        m_firstScan = false;
+    }
 }
 
 void FileMonitor::updateWatchList()
