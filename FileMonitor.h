@@ -18,7 +18,7 @@ public:
 
 signals:
     void fileChanged(const FileEntry &entry);           // Изменён/добавлен
-    void fileRemoved(const QString &relativePath);      // Удалён
+    void fileRemoved(const FileEntry &entry);      // Удалён
 
 private slots:
     void onFileChanged(const QString &path);
@@ -32,6 +32,6 @@ private:
 
     void rescan();
     void updateWatchList();
-    FileEntry getFileEntry(const QString &rootDir, const QString &fullPath) const;
-    QString makeRelativePath(const QString &rootDir, const QString &fullPath) const;
+    FileEntry getFileEntry(int rootIndex, const QString &fullPath) const;
+    QString makeKey(int rootIndex, const QString &relativePath) const;
 };

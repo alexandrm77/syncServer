@@ -5,8 +5,7 @@
 #include <QDebug>
 
 FileMonitor::FileMonitor(const QStringList &directories, QObject *parent)
-    : QObject(parent),
-    m_directories(directories)
+    : QObject(parent), m_directories(directories)
 {
     for (QString &dir : m_directories)
         dir = QDir(dir).absolutePath();
@@ -34,30 +33,31 @@ void FileMonitor::rescan()
 {
     QHash<QString, FileEntry> newFiles;
 
-    for (const QString &rootDir : m_directories) {
-        QDir dir(rootDir);
+    for (int rootIndex = 0; rootIndex < m_directories.size(); ++rootIndex) {
+        const QString &rootDir = m_directories[rootIndex];
+        QDirIterator it(rootDir, QDir::Files, QDirIterator::Subdirectories);
 
-        QDirIterator it(dir.absolutePath(), QDir::Files, QDirIterator::Subdirectories);
         while (it.hasNext()) {
             QString fullPath = it.next();
-            QString relative = makeRelativePath(rootDir, fullPath);
-            FileEntry entry = getFileEntry(rootDir, fullPath);
-            newFiles[relative] = entry;
+            FileEntry entry = getFileEntry(rootIndex, fullPath);
+            QString key = makeKey(rootIndex, entry.path);
+            newFiles[key] = entry;
 
-            if (!m_currentFiles.contains(relative) || m_currentFiles[relative].version != entry.version) {
+            // Новый или обновлённый
+            if (!m_currentFiles.contains(key) || m_currentFiles[key].version != entry.version) {
                 emit fileChanged(entry);
             }
         }
     }
 
     // Найдём удалённые
-    for (const QString &oldPath : m_currentFiles.keys()) {
-        if (!newFiles.contains(oldPath)) {
-            emit fileRemoved(oldPath);
+    for (const QString &oldKey : m_currentFiles.keys()) {
+        if (!newFiles.contains(oldKey)) {
+            emit fileRemoved(m_currentFiles[oldKey]);
         }
     }
 
-    m_currentFiles = newFiles;
+    m_currentFiles = std::move(newFiles);
 }
 
 void FileMonitor::updateWatchList()
@@ -65,69 +65,70 @@ void FileMonitor::updateWatchList()
     m_watcher.removePaths(m_watcher.files());
     m_watcher.removePaths(m_watcher.directories());
 
-    QSet<QString> allDirs;
-    for (const QString &relative : m_currentFiles.keys()) {
-        const FileEntry &entry = m_currentFiles[relative];
-        for (const QString &root : m_directories) {
-            QString fullPath = QDir(root).absoluteFilePath(relative);
-            if (QFileInfo::exists(fullPath)) {
-                m_watcher.addPath(fullPath);
+    // Добавляем файлы и каталоги для отслеживания
+    for (const FileEntry &entry : m_currentFiles) {
+        QString fullPath = m_directories[entry.rootIndex] + "/" + entry.path;
+        m_watcher.addPath(fullPath);
+    }
 
-                // Добавим директории вверх по дереву
-                QFileInfo info(fullPath);
-                QDir parent = info.dir();
-                while (parent.path().startsWith(root)) {
-                    allDirs.insert(parent.path());
-                    if (parent.path() == root)
-                        break;
-                    parent.cdUp();
-                }
+    // Добавляем все каталоги для отслеживания (родительские тоже)
+    QSet<QString> allDirs;
+    for (const FileEntry &entry : m_currentFiles) {
+        QFileInfo info(m_directories[entry.rootIndex] + "/" + entry.path);
+        QDir parent = info.dir();
+
+        while (true) {
+            QString parentPath = parent.absolutePath();
+            allDirs.insert(parentPath);
+            if (m_directories.contains(parentPath))
                 break;
-            }
+            if (!parent.cdUp())
+                break;
         }
     }
 
-    for (const QString &dirPath : allDirs)
+    for (const QString &dirPath : allDirs) {
         m_watcher.addPath(dirPath);
+    }
 }
 
-FileEntry FileMonitor::getFileEntry(const QString &rootDir, const QString &fullPath) const
+FileEntry FileMonitor::getFileEntry(int rootIndex, const QString &fullPath) const
 {
     QFileInfo info(fullPath);
-    QString relativePath = makeRelativePath(rootDir, fullPath);
+    QString relativePath = QDir(m_directories[rootIndex]).relativeFilePath(fullPath);
     QString type = info.suffix();
-    int version = static_cast<int>(info.lastModified().toMSecsSinceEpoch() / 1000);
-    return FileEntry(relativePath, type, version);
+    quint64 version = (info.lastModified().toMSecsSinceEpoch() / 1000);
+    return FileEntry(relativePath, type, version, rootIndex);
 }
 
-QString FileMonitor::makeRelativePath(const QString &rootDir, const QString &fullPath) const
+QString FileMonitor::makeKey(int rootIndex, const QString &relativePath) const
 {
-    return QDir(rootDir).relativeFilePath(fullPath);
+    return QString::number(rootIndex) + ":" + relativePath;
 }
 
 void FileMonitor::onFileChanged(const QString &path)
 {
-    QFileInfo info(path);
-    if (!info.exists()) {
-        for (const QString &root : m_directories) {
-            QString relative = makeRelativePath(root, path);
-            if (m_currentFiles.contains(relative)) {
-                emit fileRemoved(relative);
-                m_currentFiles.remove(relative);
-                break;
+    // Определяем, из какой папки пришло событие
+    for (int rootIndex = 0; rootIndex < m_directories.size(); ++rootIndex) {
+        const QString &rootDir = m_directories[rootIndex];
+        if (path.startsWith(rootDir)) {
+            QFileInfo info(path);
+            if (!info.exists()) {
+                QString relative = QDir(rootDir).relativeFilePath(path);
+                QString key = makeKey(rootIndex, relative);
+                if (m_currentFiles.contains(key)) {
+                    emit fileRemoved(m_currentFiles[key]);
+                    m_currentFiles.remove(key);
+                    updateWatchList();
+                }
+                return;
             }
-        }
-        updateWatchList();
-        return;
-    }
 
-    for (const QString &root : m_directories) {
-        if (path.startsWith(root)) {
-            FileEntry updated = getFileEntry(root, path);
-            QString relative = updated.path;
-            m_currentFiles[relative] = updated;
+            FileEntry updated = getFileEntry(rootIndex, path);
+            QString key = makeKey(rootIndex, updated.path);
+            m_currentFiles[key] = updated;
             emit fileChanged(updated);
-            break;
+            return;
         }
     }
 }

@@ -40,7 +40,7 @@ private:
     QHash<QTcpSocket*, QByteArray> m_clientBuffers;
     FileMonitor *m_monitor = nullptr;
     // актуальное состояние файлов сервера
-    QHash<QString, FileEntry> m_fileEntries;
+    QHash<QPair<int, QString>, FileEntry> m_fileEntries;
     QStringList m_syncDirectories;
     QUdpSocket *m_udpSocket;
 
@@ -52,7 +52,7 @@ private:
     void handleRegisterRequest(const QHostAddress &addr);
     void handleSyncList(QTcpSocket *socket, const QByteArray &body);
     void handleDownloadRequest(QTcpSocket *socket, const QString &fileName);
-    void handleDownload(QTcpSocket *socket, const QString &relativePath);
+    void handleDownload(QTcpSocket *socket, const QByteArray &path);
     void handleDelete(QTcpSocket *socket, const QMap<QString, QString> &headers);
     void handleUpload(QTcpSocket *socket, const QMap<QString, QString> &headers, const QByteArray &body);
     void fetchFromRemote(const QString &path, std::function<void(QByteArray)> callback);
@@ -69,6 +69,6 @@ private:
                           const QString &status,
                           const QByteArray &body,
                           const QString &contentType = "application/octet-stream");
-    void notifyUpdate(const QString &relativePath, bool deleted = false);
-    QString resolveFullPath(const QString &relativePath) const;
+    void notifyUpdate(const QString &relativePath, bool deleted, int rootIndex);
+    QString resolveFullPath(int rootIndex, const QString &relativePath) const;
 };

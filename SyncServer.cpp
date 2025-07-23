@@ -28,27 +28,25 @@ SyncServer::SyncServer(QObject *parent)
     m_cleanupTimer.start();
 
     // Инициализация мониторинга файлов
-    m_syncDirectories.append(QDir::homePath() + "/test/serv");
-    m_syncDirectories.append(QDir::homePath() + "/test/serv2");
+    m_syncDirectories.append(QDir::homePath() + "/test/serv/fold1");
+    m_syncDirectories.append(QDir::homePath() + "/test/serv/fold2");
     m_monitor = new FileMonitor(m_syncDirectories, this);
 
     connect(m_monitor, &FileMonitor::fileChanged, this, [=](const FileEntry &entry){
-        qDebug() << "[SERVER] Изменён/добавлен:" << entry.path << entry.version;
+        qDebug() << "[SERVER] Изменён/добавлен:" << entry.path << entry.version << "rootIndex:" << entry.rootIndex;
 
-        // Обнови внутреннюю структуру, если есть
-        m_fileEntries[entry.path] = entry;
+        m_fileEntries[qMakePair(entry.rootIndex, entry.path)] = entry;
 
-        // Уведомить клиентов
-        notifyUpdate(entry.path);
+        notifyUpdate(entry.path, false, entry.rootIndex);
     });
 
-    connect(m_monitor, &FileMonitor::fileRemoved, this, [=](const QString &path){
-        qDebug() << "[SERVER] Удалён:" << path;
+    connect(m_monitor, &FileMonitor::fileRemoved, this, [=](const FileEntry &entry){
+        qDebug() << "[SERVER] Удалён:" << entry.path;
 
-        m_fileEntries.remove(path);
+        m_fileEntries.remove(qMakePair(entry.rootIndex, entry.path));
 
         // Уведомить клиентов
-        notifyUpdate(path, /*deleted=*/true);
+        notifyUpdate(entry.path, true, entry.rootIndex);
     });
 
     m_monitor->start();
@@ -56,7 +54,7 @@ SyncServer::SyncServer(QObject *parent)
     // Заполняем m_fileEntries актуальными файлами из папки
     const auto initialFiles = m_monitor->currentFiles();
     for (const FileEntry &entry : initialFiles) {
-        m_fileEntries[entry.path] = entry;
+        m_fileEntries[qMakePair(entry.rootIndex, entry.path)] = entry;
     }
 }
 
@@ -211,9 +209,7 @@ void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data,
     }
 
     if (data.startsWith("GET /download")) {
-        QUrl url = QUrl::fromEncoded(path);
-        QString relativePath = QUrlQuery(url).queryItemValue("path");
-        handleDownload(socket, relativePath);
+        handleDownload(socket, path);
         return;
     }
 
@@ -248,7 +244,7 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
     bool allAccepted = true;
     bool isFullSync = true;
 
-    QHash<QString, FileEntry> clientEntries;
+    QHash<QPair<int, QString>, FileEntry> clientEntries;
 
     // Разбор входящих данных
     for (const QJsonValue &val : clientArray) {
@@ -260,11 +256,12 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
         entry.path = obj["path"].toString();
         entry.type = obj["type"].toString();
         entry.version = obj["version"].toString().toULongLong();
+        entry.rootIndex = obj["rootIndex"].toInt();
 
         if (entry.type != "file")
             isFullSync = false;
 
-        clientEntries[entry.path] = entry;
+        clientEntries[qMakePair(entry.rootIndex, entry.path)] = entry;
     }
 
     if (isFullSync) {
@@ -272,22 +269,24 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
         QJsonArray diffs;
 
         for (auto it = m_fileEntries.begin(); it != m_fileEntries.end(); ++it) {
-            const QString &path = it.key();
+            const auto &key = it.key();
             const FileEntry &serverEntry = it.value();
 
-            if (!clientEntries.contains(path)) {
+            if (!clientEntries.contains(key)) {
                 // Файл есть на сервере, но нет у клиента
                 QJsonObject diff;
-                diff["path"] = path;
+                diff["path"] = key.second;
+                diff["rootIndex"] = key.first;
                 diff["type"] = "download";
                 diff["version"] = QString::number(serverEntry.version);
                 diffs.append(diff);
             } else {
-                const FileEntry &clientEntry = clientEntries[path];
+                const FileEntry &clientEntry = clientEntries[key];
                 if (clientEntry.version != serverEntry.version) {
                     // Версии у сервера и клиента отличаются. Нужно обновить
                     QJsonObject diff;
-                    diff["path"] = path;
+                    diff["path"] = key.second;
+                    diff["rootIndex"] = key.first;
                     diff["type"] = clientEntry.version < serverEntry.version
                                    ? "download" : "upload";
                     diff["version"] = QString::number(serverEntry.version);
@@ -298,15 +297,14 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
 
         // Теперь найдём удалённые файлы (были у клиента, но нет на сервере)
         for (auto it = clientEntries.begin(); it != clientEntries.end(); ++it) {
-            const QString &path = it.key();
-            const FileEntry &clientEntry = it.value();
 
-            if (!m_fileEntries.contains(path)) {
+            if (!m_fileEntries.contains(it.key())) {
                 // Файл есть у клиента, но нет на сервере
                 QJsonObject diff;
-                diff["path"] = path;
+                diff["path"] = it.key().second;
+                diff["rootIndex"] = it.key().first;
                 diff["type"] = "delete";
-                diff["version"] = QString::number(clientEntry.version);
+                diff["version"] = QString::number(it.value().version);
                 diffs.append(diff);
             }
         }
@@ -322,31 +320,20 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
         return;
     }
 
-    // Частичный список (изменённые или удалённые файлы)
+    // Частичный список
     for (const FileEntry &entry : clientEntries) {
-        const QString &path = entry.path;
-        const QString &type = entry.type;
-        const quint64 version = entry.version;
+        const auto key = qMakePair(entry.rootIndex, entry.path);
+        const bool exists = m_fileEntries.contains(key);
+        const quint64 currentVer = exists ? m_fileEntries[key].version : 0;
 
-        const bool exists = m_fileEntries.contains(path);
-        const quint64 currentVer = exists ? m_fileEntries[path].version : 0;
-
-        if (type == "deleted") {
-            // Принудительно удаляем файл
-            QString fullPath = resolveFullPath(path);
+        if (entry.type == "deleted") {
+            QString fullPath = resolveFullPath(entry.rootIndex, entry.path);
             QFile::remove(fullPath);
-            m_fileEntries.remove(path);
-
-            qDebug() << "[SyncServer] Deleted:" << path;
-
-            // Уведомление
-            notifyUpdate(path, true);
-        }
-        else if (!exists || version > currentVer) {
-            qDebug() << "[SyncServer] Accept newer file:" << path << "ver:" << version;
-            // Примем — но ждём загрузки тела
+            m_fileEntries.remove(key);
+            notifyUpdate(entry.path, true, entry.rootIndex);
+        } else if (!exists || entry.version > currentVer) {
+            // Примем — ждём upload
         } else {
-            qDebug() << "[SyncServer] Reject outdated file:" << path << "ver:" << version;
             allAccepted = false;
         }
     }
@@ -402,13 +389,26 @@ void SyncServer::handleDownloadRequest(QTcpSocket *socket, const QString &fileNa
     }
 }
 
-void SyncServer::handleDownload(QTcpSocket *socket, const QString &relativePath)
+void SyncServer::handleDownload(QTcpSocket *socket, const QByteArray &path)
 {
-    QString fullPath = resolveFullPath(relativePath);
+    // path содержит URL с параметрами, например: /download?path=relativePath&rootIndex=0
+    QUrl url = QUrl::fromEncoded(path);
+    QUrlQuery query(url);
+    QString relativePath = query.queryItemValue("path");
+    int rootIndex = query.queryItemValue("rootIndex").toInt();
+
+    if (relativePath.isEmpty() || rootIndex < 0 || rootIndex >= m_syncDirectories.size()) {
+        sendHttpResponse(socket, 400, "Bad Request", QString("Missing path or invalid rootIndex"));
+        socket->disconnectFromHost();
+        return;
+    }
+
+    QString fullPath = resolveFullPath(rootIndex, relativePath);
     QFile file(fullPath);
 
     if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
         sendHttpResponse(socket, 404, "Not Found", QString("File not found"));
+        socket->disconnectFromHost();
         return;
     }
 
@@ -424,7 +424,8 @@ void SyncServer::handleUpload(QTcpSocket *socket,
                               const QByteArray &body)
 {
     QString relativePath = headers.value("x-file-path");
-    int version = headers.value("x-file-version").toInt();
+    quint64 version = headers.value("x-file-version").toULongLong();
+    int rootIndex = headers.value("x-file-root-index").toInt();
     QString type = headers.value("x-file-type").toLower();
     if (type.isEmpty()) {
         type = "modified"; // По умолчанию
@@ -436,7 +437,8 @@ void SyncServer::handleUpload(QTcpSocket *socket,
     }
 
     // Сравнение версий
-    FileEntry current = m_fileEntries.value(relativePath, FileEntry{relativePath, "unknown", 0});
+    auto key = qMakePair(rootIndex, relativePath);
+    FileEntry current = m_fileEntries.value(key, FileEntry{relativePath, "unknown", 0, rootIndex});
     if (version <= current.version) {
         qDebug() << "Upload rejected: incoming version" << version << "≤ current version" << current.version;
         sendHttpResponse(socket, 409, "Conflict", QString("Older or same version received"));
@@ -444,7 +446,7 @@ void SyncServer::handleUpload(QTcpSocket *socket,
     }
 
     // Версия новее — сохраняем
-    QString fullPath = resolveFullPath(relativePath);
+    QString fullPath = resolveFullPath(rootIndex, relativePath);
     QDir().mkpath(QFileInfo(fullPath).absolutePath());
 
     QFile file(fullPath);
@@ -457,14 +459,14 @@ void SyncServer::handleUpload(QTcpSocket *socket,
     file.close();
 
     // Обновить локальный список
-    m_fileEntries[relativePath] = FileEntry{ relativePath, type, version };
+    m_fileEntries[key] = FileEntry{ relativePath, type, version, rootIndex };
 
-    qDebug() << "Accepted new version for" << relativePath << "version:" << version;
+    qDebug() << "Accepted new version for" << relativePath << "version:" << version<<"rootIndex:"<<rootIndex;
 
     sendHttpResponse(socket, 200, "OK", QString("File uploaded"));
 
     // Уведомить других клиентов
-    notifyUpdate(relativePath);
+    notifyUpdate(relativePath, false, rootIndex);
 }
 
 void SyncServer::sendHttpResponse(QTcpSocket *socket, int code, const QString &status,
@@ -549,10 +551,11 @@ void SyncServer::cleanupInactiveClients()
     }
 }
 
-void SyncServer::notifyUpdate(const QString &relativePath, bool deleted)
+void SyncServer::notifyUpdate(const QString &relativePath, bool deleted, int rootIndex)
 {
     QJsonObject obj;
     obj["path"] = relativePath;
+    obj["rootIndex"] = rootIndex;
     obj["deleted"] = deleted;
 
     QJsonDocument doc(obj);
@@ -585,12 +588,14 @@ void SyncServer::notifyUpdate(const QString &relativePath, bool deleted)
 void SyncServer::handleDelete(QTcpSocket *socket, const QMap<QString, QString> &headers)
 {
     QString relativePath = headers.value("x-file-path");
-    if (relativePath.isEmpty()) {
-        sendHttpResponse(socket, 400, "Bad Request", QString("Missing x-file-path header"));
+    int rootIndex = headers.value("x-file-root-index").toInt();
+
+    if (relativePath.isEmpty() || rootIndex < 0 || rootIndex >= m_syncDirectories.size()) {
+        sendHttpResponse(socket, 400, "Bad Request", QString("Missing x-file-path or invalid rootIndex"));
         return;
     }
 
-    QString fullPath = resolveFullPath(relativePath);
+    QString fullPath = resolveFullPath(rootIndex, relativePath);
     QFile file(fullPath);
 
     if (file.exists() && !file.remove()) {
@@ -598,25 +603,20 @@ void SyncServer::handleDelete(QTcpSocket *socket, const QMap<QString, QString> &
         return;
     }
 
-    m_fileEntries.remove(relativePath);
+    m_fileEntries.remove(qMakePair(rootIndex, relativePath));
     qDebug() << "Deleted file:" << relativePath;
 
     sendHttpResponse(socket, 200, "OK", QString("File deleted"));
 
-    notifyUpdate(relativePath, /*deleted=*/true);
+    notifyUpdate(relativePath, true, rootIndex);
 }
 
-QString SyncServer::resolveFullPath(const QString &relativePath) const
+QString SyncServer::resolveFullPath(int rootIndex, const QString &relativePath) const
 {
-    QString result;
+    if (rootIndex < 0 || rootIndex >= m_syncDirectories.size())
+        return QString();
 
-    for (const QString &dir : m_syncDirectories) {
-        QString fullPath = dir + "/" + relativePath;
-        if (QFile::exists(fullPath) || QFileInfo(fullPath).absoluteDir().exists()) {
-            result = fullPath;
-            break;
-        }
-    }
-
-    return result;
+    QString dir = m_syncDirectories[rootIndex];
+    QString fullPath = QDir(dir).filePath(relativePath);
+    return fullPath;
 }

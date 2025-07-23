@@ -36,12 +36,12 @@ private:
     void sendPing();
     void sendSyncListToServer(const QList<FileEntry> &files);
     void uploadFile(const FileEntry &entry);
-    void getFile(const QString &relativePath);
+    void getFile(int rootIndex, const QString &relativePath);
     void handleNotify(QTcpSocket *socket, const QByteArray &body);
-    void sendDeleteRequest(const QString &relativePath);
+    void sendDeleteRequest(const FileEntry &entry);
     void synchronizeWithServer();
     QList<FileEntry> scanLocalDirectories();
     QVector<FileDiff> parseDiffs(const QByteArray& response);
     void onResponse(const QVector<FileDiff> &diffs);
-    QString resolveFullPath(const QString &relativePath) const;
+    QString resolveFullPath(int rootIndex, const QString &relativePath) const;
 };

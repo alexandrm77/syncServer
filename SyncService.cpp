@@ -9,6 +9,10 @@
 #include <QDirIterator>
 #include <QUrl>
 
+static QString makeKey(int rootIndex, const QString &relativePath) {
+    return QString::number(rootIndex) + ":" + relativePath;
+}
+
 SyncService::SyncService(const QHostAddress &serverAddress,
                          quint16 serverPort,
                          QObject *parent)
@@ -17,39 +21,40 @@ SyncService::SyncService(const QHostAddress &serverAddress,
     m_pingTimer.setInterval(30 * 1000); // 30 секунд
     connect(&m_pingTimer, &QTimer::timeout, this, &SyncService::sendPing);
 
-    m_syncDirectories.append(QDir::homePath() + "/test/client");
-    m_syncDirectories.append(QDir::homePath() + "/test/client2");
+    m_syncDirectories.append(QDir::homePath() + "/test/client/fold1");
+    m_syncDirectories.append(QDir::homePath() + "/test/client/fold2");
     m_monitor = new FileMonitor(m_syncDirectories, this);
 
     connect(m_monitor, &FileMonitor::fileChanged, this, [=](const FileEntry &entry){
-        qDebug() << "Изменён/добавлен:" << entry.path << entry.version;
-        if (m_ignoreNextChange.contains(entry.path)) {
-            qDebug() << "Ignoring fileChanged for:" << entry.path;
-            m_ignoreNextChange.remove(entry.path);
+        QString key = makeKey(entry.rootIndex, entry.path);
+        qDebug() << "Изменён/добавлен:" << key << entry.version;
+        if (m_ignoreNextChange.contains(key)) {
+            qDebug() << "Ignoring fileChanged for:" << key;
+            m_ignoreNextChange.remove(key);
             return;
         }
-        // Отправим sync-list с изменённым файлом
         sendSyncListToServer({ entry });
     });
 
-    connect(m_monitor, &FileMonitor::fileRemoved, this, [=](const QString &relativePath){
-        if (m_ignoreNextChange.contains(relativePath)) {
-            qDebug() << "Ignoring fileRemoved for:" << relativePath;
-            m_ignoreNextChange.remove(relativePath);
+    connect(m_monitor, &FileMonitor::fileRemoved, this, [=](const FileEntry &entry){
+        QString key = makeKey(entry.rootIndex, entry.path);
+        if (m_ignoreNextChange.contains(key)) {
+            qDebug() << "Ignoring fileRemoved for:" << key;
+            m_ignoreNextChange.remove(key);
             return;
         }
 
-        qDebug() << "Удалён:" << relativePath;
+        qDebug() << "Удалён:" << key;
 
-        FileEntry deletedEntry;
-        deletedEntry.path = relativePath;
+        FileEntry deletedEntry = entry;
         deletedEntry.version = 0;
         deletedEntry.type = "deleted";
+        deletedEntry.rootIndex = entry.rootIndex;
 
         sendSyncListToServer({ deletedEntry });
 
         // Дополнительно отправим POST /delete
-        sendDeleteRequest(relativePath);
+        sendDeleteRequest(deletedEntry);
     });
 
     m_monitor->start();
@@ -84,7 +89,8 @@ QList<FileEntry> SyncService::scanLocalDirectories()
 {
     QList<FileEntry> entries;
 
-    for (const QString &dirPath : m_syncDirectories) {
+    for (int rootIndex = 0; rootIndex < m_syncDirectories.size(); ++rootIndex) {
+        const QString &dirPath = m_syncDirectories[rootIndex];
         QDir root(dirPath);
         QDirIterator it(dirPath, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
         const int basePathLength = root.absolutePath().length() + 1;
@@ -94,8 +100,10 @@ QList<FileEntry> SyncService::scanLocalDirectories()
             const QFileInfo file = it.fileInfo();
 
             FileEntry entry;
-            entry.path = root.dirName() + "/" + file.filePath().mid(basePathLength); // добавим относительность
-            entry.version = static_cast<int>(file.lastModified().toMSecsSinceEpoch() / 1000);
+            // Формируем путь вида "fold1/relative/path"
+            entry.path = root.dirName() + "/" + file.filePath().mid(basePathLength);
+            entry.rootIndex = rootIndex;
+            entry.version = (file.lastModified().toMSecsSinceEpoch() / 1000);
             entry.type = "file";
             entries.append(entry);
         }
@@ -103,7 +111,6 @@ QList<FileEntry> SyncService::scanLocalDirectories()
 
     return entries;
 }
-
 
 void SyncService::discoverAndStart(QObject *parent)
 {
@@ -202,7 +209,6 @@ void SyncService::onPingSocketError(QAbstractSocket::SocketError socketError)
     }
 }
 
-
 void SyncService::sendSyncListToServer(const QList<FileEntry> &files)
 {
     QJsonArray arr;
@@ -211,6 +217,7 @@ void SyncService::sendSyncListToServer(const QList<FileEntry> &files)
         obj["path"] = entry.path;
         obj["version"] = QString::number(entry.version);
         obj["type"] = entry.type;
+        obj["rootIndex"] = QString::number(entry.rootIndex);
         arr.append(obj);
     }
 
@@ -244,10 +251,8 @@ void SyncService::sendSyncListToServer(const QList<FileEntry> &files)
                 }
 
                 // fallback: сервер ничего не вернул, загружаем сами
-                qDebug()<<"fallback: сервер ничего не вернул, загружаем сами";
                 for (const FileEntry &entry : files) {
                     if (entry.type != "deleted")
-                        qDebug()<<Q_FUNC_INFO;
                         uploadFile(entry);
                 }
             }
@@ -285,46 +290,55 @@ QVector<FileDiff> SyncService::parseDiffs(const QByteArray& response)
         diff.path = obj["path"].toString();
         diff.version = obj["version"].toString().toLongLong();
         diff.type = obj["type"].toString();  // "upload" или "download"
+        diff.rootIndex = obj["rootIndex"].toInt();
         diffs.append(diff);
     }
 
     return diffs;
 }
 
-QString SyncService::resolveFullPath(const QString &relativePath) const
+QString SyncService::resolveFullPath(int rootIndex, const QString &relativePath) const
 {
-    QString result;
+    if (rootIndex < 0 || rootIndex >= m_syncDirectories.size())
+        return QString();
 
-    for (const QString &dir : m_syncDirectories) {
-        QString fullPath = dir + "/" + relativePath;
-        if (QFile::exists(fullPath) || QFileInfo(fullPath).absoluteDir().exists()) {
-            result = fullPath;
-            break;
-        }
-    }
-
-    return result;
+    QString dir = m_syncDirectories[rootIndex];
+    QString fullPath = QDir(dir).filePath(relativePath);
+    return fullPath;
 }
 
 void SyncService::onResponse(const QVector<FileDiff> &diffs)
 {
-    qDebug()<<Q_FUNC_INFO;
     for (const FileDiff &diff : diffs) {
         if (diff.type == "download") {
-            getFile(diff.path);
+            getFile(diff.rootIndex, diff.path);
         } else if (diff.type == "upload") {
             FileEntry entry;
             entry.path = diff.path;
             entry.version = diff.version;
             entry.type = "file";
+            entry.rootIndex = diff.rootIndex;
             uploadFile(entry);
         } else if (diff.type == "delete") {
             qDebug() << "Deleting file per server instruction:" << diff.path;
-            QString fullPath = resolveFullPath(diff.path);
-            QFile::remove(fullPath);
+            QString fullPath = resolveFullPath(diff.rootIndex, diff.path);
+            if (!fullPath.isEmpty()) {
+                QFile::remove(fullPath);
 
-            // добавляем в список игнорирования
-            m_ignoreNextChange.insert(diff.path);
+                QString key;
+                // Сформируем ключ для игнорирования
+                for (int i = 0; i < m_syncDirectories.size(); ++i) {
+                    QDir dir(m_syncDirectories[i]);
+                    QString rootDirName = dir.dirName();
+                    if (diff.path.startsWith(rootDirName + "/")) {
+                        key = makeKey(i, diff.path);
+                        break;
+                    }
+                }
+
+                if (!key.isEmpty())
+                    m_ignoreNextChange.insert(key);
+            }
         } else {
             qWarning() << "Unknown diff type:" << diff.type;
         }
@@ -341,7 +355,13 @@ void SyncService::handleSocketError(QAbstractSocket::SocketError err)
 
 void SyncService::uploadFile(const FileEntry &entry)
 {
-    QFile file(resolveFullPath(entry.path));
+    QString fullPath = resolveFullPath(entry.rootIndex, entry.path);
+    if (fullPath.isEmpty()) {
+        qWarning() << "uploadFile: cannot resolve full path for" << entry.path;
+        return;
+    }
+
+    QFile file(fullPath);
     if (!file.open(QIODevice::ReadOnly)) {
         qWarning() << "Failed to open file for upload:" << entry.path;
         return;
@@ -359,6 +379,7 @@ void SyncService::uploadFile(const FileEntry &entry)
         request += "X-File-Path: " + entry.path.toUtf8() + "\r\n";
         request += "X-File-Version: " + QByteArray::number(entry.version) + "\r\n";
         request += "X-File-Type: " + entry.type.toUtf8() + "\r\n";
+        request += "X-File-Root-Index: " + QByteArray::number(entry.rootIndex) + "\r\n";
         request += "Content-Type: application/octet-stream\r\n";
         request += "Connection: close\r\n\r\n";
         request += fileData;
@@ -376,14 +397,16 @@ void SyncService::uploadFile(const FileEntry &entry)
     socket->connectToHost(m_serverAddress, m_serverPort);
 }
 
-void SyncService::getFile(const QString &relativePath)
+void SyncService::getFile(int rootIndex, const QString &relativePath)
 {
     QTcpSocket *socket = new QTcpSocket(this);
     QByteArray *buffer = new QByteArray;
 
     connect(socket, &QTcpSocket::connected, [=]() {
         QByteArray request;
-        request += "GET /download?path=" + QUrl::toPercentEncoding(relativePath) + " HTTP/1.1\r\n";
+        request += "GET /download?path=" + QUrl::toPercentEncoding(relativePath)
+                   + "&rootIndex=" + QByteArray::number(rootIndex)
+                   + " HTTP/1.1\r\n";
         request += "Host: syncserver\r\n";
         request += "Connection: close\r\n\r\n";
         socket->write(request);
@@ -399,7 +422,14 @@ void SyncService::getFile(const QString &relativePath)
         QByteArray body = buffer->mid(headerEndIndex + 4);
 
         // Сохраняем файл
-        QString fullPath = resolveFullPath(relativePath);
+        QString fullPath = resolveFullPath(rootIndex, relativePath);
+        if (fullPath.isEmpty()) {
+            qWarning() << "getFile: cannot resolve full path for" << relativePath;
+            delete buffer;
+            socket->disconnectFromHost();
+            return;
+        }
+
         QDir().mkpath(QFileInfo(fullPath).absolutePath());
         QFile file(fullPath);
         if (file.open(QIODevice::WriteOnly)) {
@@ -409,6 +439,19 @@ void SyncService::getFile(const QString &relativePath)
         } else {
             qWarning() << "Failed to save downloaded file:" << fullPath;
         }
+
+        // Помечаем для игнорирования, чтобы не зациклить синхронизацию
+        QString key;
+        for (int i = 0; i < m_syncDirectories.size(); ++i) {
+            QDir dir(m_syncDirectories[i]);
+            QString rootDirName = dir.dirName();
+            if (relativePath.startsWith(rootDirName + "/")) {
+                key = makeKey(i, relativePath);
+                break;
+            }
+        }
+        if (!key.isEmpty())
+            m_ignoreNextChange.insert(key);
 
         delete buffer;
     });
@@ -430,22 +473,45 @@ void SyncService::handleNotify(QTcpSocket *socket, const QByteArray &body)
     QJsonObject obj = doc.object();
     QString path = obj.value("path").toString();
     bool deleted = obj.value("deleted").toBool();
+    int rootIndex = obj.value("rootIndex").toInt();
 
     if (path.isEmpty())
         return;
 
     if (deleted) {
         qDebug() << "Received deletion notification for" << path;
-        QString fullPath = resolveFullPath(path);
-        QFile::remove(fullPath);
+        QString fullPath = resolveFullPath(rootIndex, path);
+        if (!fullPath.isEmpty()) {
+            QFile::remove(fullPath);
 
-        // Добавляем в список игнорирования
-        m_ignoreNextChange.insert(path);
+            QString key;
+            for (int i = 0; i < m_syncDirectories.size(); ++i) {
+                QDir dir(m_syncDirectories[i]);
+                QString rootDirName = dir.dirName();
+                if (path.startsWith(rootDirName + "/")) {
+                    key = makeKey(i, path);
+                    break;
+                }
+            }
+
+            if (!key.isEmpty())
+                m_ignoreNextChange.insert(key);
+        }
     } else {
         qDebug() << "Received update notification for" << path;
-        // Тоже добавим сюда, чтобы избежать лишнего fileChanged
-        m_ignoreNextChange.insert(path);
-        getFile(path);
+        QString key;
+        for (int i = 0; i < m_syncDirectories.size(); ++i) {
+            QDir dir(m_syncDirectories[i]);
+            QString rootDirName = dir.dirName();
+            if (path.startsWith(rootDirName + "/")) {
+                key = makeKey(i, path);
+                break;
+            }
+        }
+        if (!key.isEmpty())
+            m_ignoreNextChange.insert(key);
+
+        getFile(rootIndex, path);
     }
 }
 
@@ -482,15 +548,22 @@ void SyncService::handleNewConnection()
     }
 }
 
-void SyncService::sendDeleteRequest(const QString &relativePath)
+void SyncService::sendDeleteRequest(const FileEntry &entry)
 {
+    QString fullPath = resolveFullPath(entry.rootIndex, entry.path);
+    if (fullPath.isEmpty()) {
+        qWarning() << "sendDeleteRequest: cannot resolve full path for" << entry.path;
+        return;
+    }
+
     QTcpSocket *socket = new QTcpSocket(this);
 
     connect(socket, &QTcpSocket::connected, [=]() {
         QByteArray request;
         request += "POST /delete HTTP/1.1\r\n";
         request += "Host: syncserver\r\n";
-        request += "X-File-Path: " + relativePath.toUtf8() + "\r\n";
+        request += "X-File-Path: " + entry.path.toUtf8() + "\r\n";
+        request += "X-File-Root-Index: " + QByteArray::number(entry.rootIndex) + "\r\n";
         request += "Connection: close\r\n\r\n";
         socket->write(request);
     });
