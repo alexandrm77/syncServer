@@ -356,6 +356,7 @@ void SyncService::handleSocketError(QAbstractSocket::SocketError err)
 void SyncService::uploadFile(const FileEntry &entry)
 {
     QString fullPath = resolveFullPath(entry.rootIndex, entry.path);
+    qDebug()<<Q_FUNC_INFO<<"fullPath "<<fullPath;
     if (fullPath.isEmpty()) {
         qWarning() << "uploadFile: cannot resolve full path for" << entry.path;
         return;
@@ -390,12 +391,41 @@ void SyncService::uploadFile(const FileEntry &entry)
     });
 
     // После записи — отправляем чанки файла
-    connect(socket, &QTcpSocket::bytesWritten, this, [=]() mutable {
+    // connect(socket, &QTcpSocket::bytesWritten, this, [=]() mutable {
+    //     if (!file->atEnd()) {
+    //         QByteArray chunk = file->read(chunkSize);
+    //         socket->write(chunk);
+    //     }
+    // });
+
+    auto done = QSharedPointer<bool>::create(false);
+
+    auto sendChunk = [socket, file, done]() {
+        qDebug()<<Q_FUNC_INFO<<"In sendChunk";
+        if (*done) return;
+
         if (!file->atEnd()) {
+            qDebug()<<Q_FUNC_INFO<<"In sendChunk, write";
             QByteArray chunk = file->read(chunkSize);
-            socket->write(chunk);
+            /*int bytes = */socket->write(chunk);
+            //qDebug()<<"written bytes = "<<bytes;
+        } else {
+            qDebug()<<Q_FUNC_INFO<<"In sendChunk, close";
+            file->close();
+            file->deleteLater();
+            *done = true;
+            socket->disconnectFromHost();
         }
+    };
+
+    // Отправляем первый чанк сразу
+    sendChunk();
+
+    // Подключаемся к сигналу, чтобы продолжать отправку, когда сокет готов
+    QObject::connect(socket, &QTcpSocket::bytesWritten, socket, [sendChunk]() {
+        sendChunk();
     });
+
 
     connect(socket, &QTcpSocket::readyRead, this, [=]() {
         QByteArray response = socket->readAll();
@@ -403,8 +433,6 @@ void SyncService::uploadFile(const FileEntry &entry)
     });
 
     connect(socket, &QTcpSocket::disconnected, this, [=]() {
-        file->close();
-        file->deleteLater();
         socket->deleteLater();
         qDebug() << "Upload finished:" << entry.path;
     });
