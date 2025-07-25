@@ -361,46 +361,70 @@ void SyncService::uploadFile(const FileEntry &entry)
         return;
     }
 
-    QFile file(fullPath);
-    if (!file.open(QIODevice::ReadOnly)) {
+    QFile *file = new QFile(fullPath, this);
+    if (!file->open(QIODevice::ReadOnly)) {
         qWarning() << "Failed to open file for upload:" << entry.path;
+        file->deleteLater();
         return;
     }
 
-    QByteArray fileData = file.readAll();
-
     QTcpSocket *socket = new QTcpSocket(this);
+    const qint64 chunkSize = 64 * 1024; // 64 Кб
 
-    connect(socket, &QTcpSocket::connected, [=]() {
-        QByteArray request;
-        request += "POST /upload HTTP/1.1\r\n";
-        request += "Host: syncserver\r\n";
-        request += "Content-Length: " + QByteArray::number(fileData.size()) + "\r\n";
-        request += "X-File-Path: " + entry.path.toUtf8() + "\r\n";
-        request += "X-File-Version: " + QByteArray::number(entry.version) + "\r\n";
-        request += "X-File-Type: " + entry.type.toUtf8() + "\r\n";
-        request += "X-File-Root-Index: " + QByteArray::number(entry.rootIndex) + "\r\n";
-        request += "Content-Type: application/octet-stream\r\n";
-        request += "Connection: close\r\n\r\n";
-        request += fileData;
+    // Сохраняем состояние в захвате
+    connect(socket, &QTcpSocket::connected, this, [=]() mutable {
+        // Отправляем HTTP заголовки
+        QByteArray headers;
+        headers += "POST /upload HTTP/1.1\r\n";
+        headers += "Host: syncserver\r\n";
+        headers += "Content-Length: " + QByteArray::number(file->size()) + "\r\n";
+        headers += "X-File-Path: " + entry.path.toUtf8() + "\r\n";
+        headers += "X-File-Version: " + QByteArray::number(entry.version) + "\r\n";
+        headers += "X-File-Type: " + entry.type.toUtf8() + "\r\n";
+        headers += "X-File-Root-Index: " + QByteArray::number(entry.rootIndex) + "\r\n";
+        headers += "Content-Type: application/octet-stream\r\n";
+        headers += "Connection: close\r\n\r\n";
 
-        socket->write(request);
+        socket->write(headers);
+        socket->flush();
     });
 
-    connect(socket, &QTcpSocket::readyRead, [=]() {
+    // После записи — отправляем чанки файла
+    connect(socket, &QTcpSocket::bytesWritten, this, [=]() mutable {
+        if (!file->atEnd()) {
+            QByteArray chunk = file->read(chunkSize);
+            socket->write(chunk);
+        }
+    });
+
+    connect(socket, &QTcpSocket::readyRead, this, [=]() {
         QByteArray response = socket->readAll();
         qDebug() << "Upload response:" << response;
     });
 
-    connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+    connect(socket, &QTcpSocket::disconnected, this, [=]() {
+        file->close();
+        file->deleteLater();
+        socket->deleteLater();
+        qDebug() << "Upload finished:" << entry.path;
+    });
 
     socket->connectToHost(m_serverAddress, m_serverPort);
 }
 
 void SyncService::getFile(int rootIndex, const QString &relativePath)
 {
+    qDebug()<<Q_FUNC_INFO<<"rootIndex "<<rootIndex<<" relativePath "<<relativePath;
+    QString fullPath = resolveFullPath(rootIndex, relativePath);
+    if (fullPath.isEmpty()) {
+        qWarning() << "getFile: cannot resolve full path for" << relativePath;
+        return;
+    }
+
     QTcpSocket *socket = new QTcpSocket(this);
     QByteArray *buffer = new QByteArray;
+    QFile *file = new QFile(fullPath);
+    auto headerParsed = QSharedPointer<bool>::create(false);
 
     connect(socket, &QTcpSocket::connected, [=]() {
         QByteArray request;
@@ -413,34 +437,46 @@ void SyncService::getFile(int rootIndex, const QString &relativePath)
     });
 
     connect(socket, &QTcpSocket::readyRead, [=]() {
+        qDebug()<<Q_FUNC_INFO<<"In readyRead";
         buffer->append(socket->readAll());
 
-        int headerEndIndex = buffer->indexOf("\r\n\r\n");
-        if (headerEndIndex == -1)
-            return;
+        if (!*headerParsed) {
+            int headerEndIndex = buffer->indexOf("\r\n\r\n");
+            if (headerEndIndex == -1)
+                return;
 
-        QByteArray body = buffer->mid(headerEndIndex + 4);
+            *headerParsed = true;
+            QByteArray body = buffer->mid(headerEndIndex + 4);
+            buffer->clear();  // освобождаем память
+            buffer->append(body);
 
-        // Сохраняем файл
-        QString fullPath = resolveFullPath(rootIndex, relativePath);
-        if (fullPath.isEmpty()) {
-            qWarning() << "getFile: cannot resolve full path for" << relativePath;
-            delete buffer;
-            socket->disconnectFromHost();
-            return;
+            QDir().mkpath(QFileInfo(fullPath).absolutePath());
+            if (!file->open(QIODevice::WriteOnly)) {
+                qWarning() << "Failed to save downloaded file:" << fullPath;
+                delete buffer;
+                file->deleteLater();
+                socket->disconnectFromHost();
+                return;
+            }
+qDebug()<<Q_FUNC_INFO<<"In readyRead, !*headerParsed, write";
+            file->write(*buffer);
+            buffer->clear();
+        }
+        else if (file->isOpen()) {
+            qDebug()<<Q_FUNC_INFO<<"In readyRead, headerParsed already, just write";
+            file->write(*buffer);
+            buffer->clear();
+        }
+    });
+
+    connect(socket, &QTcpSocket::disconnected, [=]() {
+        qDebug()<<Q_FUNC_INFO<<"socket disconnected";
+        if (file->isOpen()) {
+            file->close();
+            qDebug() << "Downloaded file:" << file->fileName();
         }
 
-        QDir().mkpath(QFileInfo(fullPath).absolutePath());
-        QFile file(fullPath);
-        if (file.open(QIODevice::WriteOnly)) {
-            file.write(body);
-            file.close();
-            qDebug() << "Downloaded file:" << relativePath;
-        } else {
-            qWarning() << "Failed to save downloaded file:" << fullPath;
-        }
-
-        // Помечаем для игнорирования, чтобы не зациклить синхронизацию
+        // Игнорируем следующий change
         QString key;
         for (int i = 0; i < m_syncDirectories.size(); ++i) {
             QDir dir(m_syncDirectories[i]);
@@ -454,9 +490,9 @@ void SyncService::getFile(int rootIndex, const QString &relativePath)
             m_ignoreNextChange.insert(key);
 
         delete buffer;
+        file->deleteLater();
+        socket->deleteLater();
     });
-
-    connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
 
     socket->connectToHost(m_serverAddress, m_serverPort);
 }

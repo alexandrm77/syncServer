@@ -165,6 +165,7 @@ void SyncServer::handleClientReadyRead()
 
 void SyncServer::handleClientDisconnected()
 {
+    qDebug()<<Q_FUNC_INFO;
     QTcpSocket *socket = qobject_cast<QTcpSocket*>(sender());
     if (!socket)
         return;
@@ -180,7 +181,7 @@ void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data,
                                      const QByteArray &body,
                                      const QByteArray& path)
 {
-    qDebug() << "Request:" << data;
+   // qDebug() << "Request:" << data;
 
     if (data.startsWith("GET /register")) {
         handleRegisterRequest(socket->peerAddress());
@@ -390,7 +391,6 @@ void SyncServer::handleDownloadRequest(QTcpSocket *socket, const QString &fileNa
 
 void SyncServer::handleDownload(QTcpSocket *socket, const QByteArray &path)
 {
-    // path содержит URL с параметрами, например: /download?path=relativePath&rootIndex=0
     QUrl url = QUrl::fromEncoded(path);
     QUrlQuery query(url);
     QString relativePath = query.queryItemValue("path");
@@ -403,20 +403,57 @@ void SyncServer::handleDownload(QTcpSocket *socket, const QByteArray &path)
     }
 
     QString fullPath = resolveFullPath(rootIndex, relativePath);
-    QFile file(fullPath);
+    QFile* file = new QFile(fullPath, socket); // Владелец — сокет, чтобы автоматически удалилось
 
-    if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
+    if (!file->exists() || !file->open(QIODevice::ReadOnly)) {
         sendHttpResponse(socket, 404, "Not Found", QString("File not found"));
         socket->disconnectFromHost();
+        file->deleteLater();
         return;
     }
 
-    QByteArray data = file.readAll();
-    file.close();
+    // Отправляем HTTP заголовок
+    QByteArray header;
+    header += "HTTP/1.1 200 OK\r\n";
+    header += "Content-Type: application/octet-stream\r\n";
+    header += "Content-Length: " + QByteArray::number(file->size()) + "\r\n";
+    header += "Connection: close\r\n\r\n";
 
-    sendHttpResponse(socket, 200, "OK", data, "application/octet-stream");
+    socket->write(header);
+
+    // Создаем временный буфер и отправляем файл чанками
+    const int chunkSize = 64 * 1024; // 64 Кб
+    auto done = QSharedPointer<bool>::create(false);
+
+    auto sendChunk = [socket, file, done]() {
+         qDebug()<<Q_FUNC_INFO<<"In sendChunk";
+        if (*done) return;
+
+        if (!file->atEnd()) {
+            qDebug()<<Q_FUNC_INFO<<"In sendChunk, write";
+            QByteArray chunk = file->read(chunkSize);
+            socket->write(chunk);
+        } else {
+            qDebug()<<Q_FUNC_INFO<<"In sendChunk, close";
+            file->close();
+            file->deleteLater();
+            *done = true;
+            socket->disconnectFromHost();
+        }
+    };
+
+    // Отправляем первый чанк сразу
+    sendChunk();
+
+    // Подключаемся к сигналу, чтобы продолжать отправку, когда сокет готов
+    QObject::connect(socket, &QTcpSocket::bytesWritten, socket, [sendChunk]() {
+        sendChunk();
+    });
+
+    connect(socket, &QTcpSocket::disconnected, [](){
+        qDebug()<<Q_FUNC_INFO<<"socket disconnected";
+    });
 }
-
 
 void SyncServer::handleUpload(QTcpSocket *socket,
                               const QMap<QString, QString> &headers,
