@@ -372,32 +372,6 @@ void SyncService::uploadFile(const FileEntry &entry)
     QTcpSocket *socket = new QTcpSocket(this);
     const qint64 chunkSize = 64 * 1024; // 64 Кб
 
-    // Сохраняем состояние в захвате
-    connect(socket, &QTcpSocket::connected, this, [=]() mutable {
-        // Отправляем HTTP заголовки
-        QByteArray headers;
-        headers += "POST /upload HTTP/1.1\r\n";
-        headers += "Host: syncserver\r\n";
-        headers += "Content-Length: " + QByteArray::number(file->size()) + "\r\n";
-        headers += "X-File-Path: " + entry.path.toUtf8() + "\r\n";
-        headers += "X-File-Version: " + QByteArray::number(entry.version) + "\r\n";
-        headers += "X-File-Type: " + entry.type.toUtf8() + "\r\n";
-        headers += "X-File-Root-Index: " + QByteArray::number(entry.rootIndex) + "\r\n";
-        headers += "Content-Type: application/octet-stream\r\n";
-        headers += "Connection: close\r\n\r\n";
-
-        socket->write(headers);
-        socket->flush();
-    });
-
-    // После записи — отправляем чанки файла
-    // connect(socket, &QTcpSocket::bytesWritten, this, [=]() mutable {
-    //     if (!file->atEnd()) {
-    //         QByteArray chunk = file->read(chunkSize);
-    //         socket->write(chunk);
-    //     }
-    // });
-
     auto done = QSharedPointer<bool>::create(false);
 
     auto sendChunk = [socket, file, done]() {
@@ -418,8 +392,24 @@ void SyncService::uploadFile(const FileEntry &entry)
         }
     };
 
-    // Отправляем первый чанк сразу
-    sendChunk();
+    // Сохраняем состояние в захвате
+    connect(socket, &QTcpSocket::connected, this, [=]() mutable {
+        // Отправляем HTTP заголовки
+        QByteArray headers;
+        headers += "POST /upload HTTP/1.1\r\n";
+        headers += "Host: syncserver\r\n";
+        headers += "Content-Length: " + QByteArray::number(file->size()) + "\r\n";
+        headers += "X-File-Path: " + entry.path.toUtf8() + "\r\n";
+        headers += "X-File-Version: " + QByteArray::number(entry.version) + "\r\n";
+        headers += "X-File-Type: " + entry.type.toUtf8() + "\r\n";
+        headers += "X-File-Root-Index: " + QByteArray::number(entry.rootIndex) + "\r\n";
+        headers += "Content-Type: application/octet-stream\r\n";
+        headers += "Connection: close\r\n\r\n";
+
+        socket->write(headers);
+        // Отправляем первый чанк сразу
+        sendChunk();
+    });
 
     // Подключаемся к сигналу, чтобы продолжать отправку, когда сокет готов
     QObject::connect(socket, &QTcpSocket::bytesWritten, socket, [sendChunk]() {
