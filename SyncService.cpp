@@ -386,14 +386,16 @@ void SyncService::uploadFile(const FileEntry &entry)
         headers += "Connection: close\r\n\r\n";
 
         socket->write(headers);
-        socket->flush();
+        QByteArray chunk = file->read(chunkSize);
+        socket->write(chunk);
     });
 
     // После записи — отправляем чанки файла
     connect(socket, &QTcpSocket::bytesWritten, this, [=]() mutable {
         if (!file->atEnd()) {
             QByteArray chunk = file->read(chunkSize);
-            socket->write(chunk);
+            int bytes = socket->write(chunk);
+            qDebug()<<Q_FUNC_INFO<<"bytes"<<bytes;
         }
     });
 
