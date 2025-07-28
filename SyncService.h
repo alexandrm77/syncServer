@@ -32,8 +32,12 @@ private:
     FileMonitor *m_monitor = nullptr;
     QTcpServer m_server;
     QSet<QString> m_ignoreNextChange;
+    QStringList m_pendingDownloads;
+    QTimer m_syncTimer;
+    FileEntry m_syncEntry;
 
     void sendPing();
+    void startSync();
     void sendSyncListToServer(const QList<FileEntry> &files);
     void uploadFile(const FileEntry &entry);
     void getFile(int rootIndex, const QString &relativePath);

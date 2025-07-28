@@ -33,9 +33,14 @@ SyncServer::SyncServer(QObject *parent)
     m_monitor = new FileMonitor(m_syncDirectories, this);
 
     connect(m_monitor, &FileMonitor::fileChanged, this, [=](const FileEntry &entry){
-        qDebug() << "[SERVER] Изменён/добавлен:" << entry.path << entry.version << "rootIndex:" << entry.rootIndex;
 
         m_fileEntries[qMakePair(entry.rootIndex, entry.path)] = entry;
+
+        if (m_pendingDownloads.contains(resolveFullPath(entry.rootIndex, entry.path))) {
+            return;
+        }
+
+        qDebug() << "[SERVER] Изменён/добавлен:" << entry.path << entry.version << "rootIndex:" << entry.rootIndex;
 
         notifyUpdate(entry.path, false, entry.rootIndex);
     });
@@ -494,13 +499,16 @@ void SyncServer::handleUpload(QTcpSocket *socket,
         return;
     }
 
+    m_pendingDownloads.append(fullPath);
     file.write(body);
     file.close();
+    m_pendingDownloads.removeAll(fullPath);
 
     // Обновить локальный список
     m_fileEntries[key] = FileEntry{ relativePath, type, version, rootIndex };
 
-    qDebug() << "Accepted new version for" << relativePath << "version:" << version<<"rootIndex:"<<rootIndex;
+    qDebug() << "Accepted new version for" << relativePath <<
+                "version:" << version<<"rootIndex:"<<rootIndex<<"size:"<<body.size();
 
     sendHttpResponse(socket, 200, "OK", QString("File uploaded"));
 

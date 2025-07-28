@@ -21,6 +21,8 @@ SyncService::SyncService(const QHostAddress &serverAddress,
 {
     m_pingTimer.setInterval(30 * 1000); // 30 секунд
     connect(&m_pingTimer, &QTimer::timeout, this, &SyncService::sendPing);
+    connect(&m_syncTimer, &QTimer::timeout, this, &SyncService::startSync);
+    m_syncTimer.setSingleShot(true);
 
     m_syncDirectories.append(QDir::homePath() + "/test/client/fold1");
     m_syncDirectories.append(QDir::homePath() + "/test/client/fold2");
@@ -28,13 +30,28 @@ SyncService::SyncService(const QHostAddress &serverAddress,
 
     connect(m_monitor, &FileMonitor::fileChanged, this, [=](const FileEntry &entry){
         QString key = makeKey(entry.rootIndex, entry.path);
-        qDebug() << "Изменён/добавлен:" << key << entry.version;
+
         if (m_ignoreNextChange.contains(key)) {
             qDebug() << "Ignoring fileChanged for:" << key;
             m_ignoreNextChange.remove(key);
             return;
         }
-        sendSyncListToServer({ entry });
+
+        QString fullPath = resolveFullPath(entry.rootIndex, entry.path);
+        if (m_pendingDownloads.contains(fullPath)) {
+            return;
+        }
+
+        m_syncEntry = entry;
+
+        qDebug() << "Изменён/добавлен:" << key << entry.version;
+        if (!m_syncTimer.isActive()) {
+            m_syncTimer.start(1000);
+        } else {
+            m_syncTimer.stop();
+            m_syncTimer.start(1000);
+        }
+
     });
 
     connect(m_monitor, &FileMonitor::fileRemoved, this, [=](const FileEntry &entry){
@@ -192,6 +209,11 @@ void SyncService::sendPing()
     connect(socket, SIGNAL(error(QAbstractSocket::SocketError)),
             this, SLOT(onPingSocketError(QAbstractSocket::SocketError)));
     socket->connectToHost(m_serverAddress, m_serverPort);
+}
+
+void SyncService::startSync()
+{
+    sendSyncListToServer({ m_syncEntry });
 }
 
 void SyncService::onPingSocketError(QAbstractSocket::SocketError socketError)
@@ -371,10 +393,11 @@ void SyncService::uploadFile(const FileEntry &entry)
 
     QTcpSocket *socket = new QTcpSocket(this);
     const qint64 chunkSize = 64 * 1024; // 64 Кб
+    m_pendingDownloads.append(fullPath);
 
     auto done = QSharedPointer<bool>::create(false);
 
-    auto sendChunk = [socket, file, done]() {
+    auto sendChunk = [socket, file, done, this, fullPath]() {
         qDebug()<<Q_FUNC_INFO<<"In sendChunk";
         if (*done) return;
 
@@ -387,6 +410,7 @@ void SyncService::uploadFile(const FileEntry &entry)
             qDebug()<<Q_FUNC_INFO<<"In sendChunk, close";
             file->close();
             file->deleteLater();
+            m_pendingDownloads.removeAll(fullPath);
             *done = true;
             socket->disconnectFromHost();
         }
@@ -479,6 +503,7 @@ void SyncService::getFile(int rootIndex, const QString &relativePath)
 qDebug()<<Q_FUNC_INFO<<"In readyRead, !*headerParsed, write";
             file->write(*buffer);
             buffer->clear();
+            m_pendingDownloads.append(fullPath);
         }
         else if (file->isOpen()) {
             qDebug()<<Q_FUNC_INFO<<"In readyRead, headerParsed already, just write";
@@ -491,6 +516,7 @@ qDebug()<<Q_FUNC_INFO<<"In readyRead, !*headerParsed, write";
         qDebug()<<Q_FUNC_INFO<<"socket disconnected";
         if (file->isOpen()) {
             file->close();
+            m_pendingDownloads.removeAll(fullPath);
             qDebug() << "Downloaded file:" << file->fileName();
         }
 

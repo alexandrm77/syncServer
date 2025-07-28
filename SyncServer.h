@@ -36,6 +36,7 @@ private:
     QHash<QString, QDateTime> m_fileVersions;
     QHash<QString, QDateTime> m_registeredClients;
     QTimer m_cleanupTimer;
+    QStringList m_pendingDownloads;
 
     QHash<QTcpSocket*, QByteArray> m_clientBuffers;
     FileMonitor *m_monitor = nullptr;
