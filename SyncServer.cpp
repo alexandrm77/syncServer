@@ -156,6 +156,9 @@ void SyncServer::handleClientReadyRead()
         }
     }
 
+    if (buffer.size() < contentLength)
+        return;
+
     // Выделяем body
     QByteArray body = buffer.mid(headerEndIndex + 4);
     handleClientRequest(socket, buffer, headers, body, path);
