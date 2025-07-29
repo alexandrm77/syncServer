@@ -9,6 +9,8 @@ TARGET = SyncServer
 INCLUDEPATH += $$PWD
 
 SOURCES += \
+    SyncController.cpp \
+    SyncServiceHelper.cpp \
     main.cpp \
     FileMonitor.cpp \
     SyncServer.cpp \
@@ -17,8 +19,10 @@ SOURCES += \
 HEADERS += \
     FileEntry.h \
     FileMonitor.h \
+    SyncController.h \
     SyncServer.h \
-    SyncService.h
+    SyncService.h \
+    SyncServiceHelper.h
 
 #target.path = /usr/bin
 #INSTALLS += target

@@ -14,7 +14,6 @@ class SyncService : public QObject
 public:
     explicit SyncService(const QHostAddress &serverAddress, quint16 serverPort, QObject *parent = nullptr);
     void start();
-    static void discoverAndStart(QObject *parent);
 
 private slots:
     void handleNewConnection();
