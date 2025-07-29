@@ -33,8 +33,8 @@ private slots:
 
 private:
     QTcpServer m_server;
-    QHash<QString, QDateTime> m_fileVersions;
     QHash<QString, QDateTime> m_registeredClients;
+    QString m_excludedIp;
     QTimer m_cleanupTimer;
     QStringList m_pendingDownloads;
 

@@ -379,7 +379,6 @@ void SyncService::handleSocketError(QAbstractSocket::SocketError err)
 void SyncService::uploadFile(const FileEntry &entry)
 {
     QString fullPath = resolveFullPath(entry.rootIndex, entry.path);
-    qDebug()<<Q_FUNC_INFO<<"fullPath "<<fullPath;
     if (fullPath.isEmpty()) {
         qWarning() << "uploadFile: cannot resolve full path for" << entry.path;
         return;
@@ -399,16 +398,12 @@ void SyncService::uploadFile(const FileEntry &entry)
     auto done = QSharedPointer<bool>::create(false);
 
     auto sendChunk = [socket, file, done, this, fullPath]() {
-        qDebug()<<Q_FUNC_INFO<<"In sendChunk";
         if (*done) return;
 
         if (!file->atEnd()) {
-            qDebug()<<Q_FUNC_INFO<<"In sendChunk, write";
             QByteArray chunk = file->read(chunkSize);
-            /*int bytes = */socket->write(chunk);
-            //qDebug()<<"written bytes = "<<bytes;
+            socket->write(chunk);
         } else {
-            qDebug()<<Q_FUNC_INFO<<"In sendChunk, close";
             file->close();
             file->deleteLater();
             m_pendingDownloads.removeAll(fullPath);
@@ -480,7 +475,6 @@ void SyncService::getFile(int rootIndex, const QString &relativePath)
     });
 
     connect(socket, &QTcpSocket::readyRead, [=]() {
-        qDebug()<<Q_FUNC_INFO<<"In readyRead";
         buffer->append(socket->readAll());
 
         if (!*headerParsed) {
@@ -501,20 +495,18 @@ void SyncService::getFile(int rootIndex, const QString &relativePath)
                 socket->disconnectFromHost();
                 return;
             }
-qDebug()<<Q_FUNC_INFO<<"In readyRead, !*headerParsed, write";
+
             file->write(*buffer);
             buffer->clear();
             m_pendingDownloads.append(fullPath);
         }
         else if (file->isOpen()) {
-            qDebug()<<Q_FUNC_INFO<<"In readyRead, headerParsed already, just write";
             file->write(*buffer);
             buffer->clear();
         }
     });
 
     connect(socket, &QTcpSocket::disconnected, [=]() {
-        qDebug()<<Q_FUNC_INFO<<"socket disconnected";
         if (file->isOpen()) {
             file->close();
             m_pendingDownloads.removeAll(fullPath);

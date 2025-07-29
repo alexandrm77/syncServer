@@ -42,7 +42,6 @@ SyncServer::SyncServer(QObject *parent)
         }
 
         qDebug() << "[SERVER] Изменён/добавлен:" << entry.path << entry.version << "rootIndex:" << entry.rootIndex;
-
         notifyUpdate(entry.path, false, entry.rootIndex);
     });
 
@@ -174,7 +173,6 @@ void SyncServer::handleClientReadyRead()
 
 void SyncServer::handleClientDisconnected()
 {
-    qDebug()<<Q_FUNC_INFO;
     QTcpSocket *socket = qobject_cast<QTcpSocket*>(sender());
     if (!socket)
         return;
@@ -190,8 +188,6 @@ void SyncServer::handleClientRequest(QTcpSocket *socket, const QByteArray &data,
                                      const QByteArray &body,
                                      const QByteArray& path)
 {
-   // qDebug() << "Request:" << data;
-
     if (data.startsWith("GET /register")) {
         handleRegisterRequest(socket->peerAddress());
         sendHttpResponse(socket, 200, "OK", QString("Registered"));
@@ -339,6 +335,7 @@ void SyncServer::handleSyncList(QTcpSocket *socket, const QByteArray &body)
             QString fullPath = resolveFullPath(entry.rootIndex, entry.path);
             QFile::remove(fullPath);
             m_fileEntries.remove(key);
+            m_excludedIp = socket->peerAddress().toString();
             notifyUpdate(entry.path, true, entry.rootIndex);
         } else if (!exists || entry.version > currentVer) {
             // Примем — ждём upload
@@ -435,15 +432,12 @@ void SyncServer::handleDownload(QTcpSocket *socket, const QByteArray &path)
     auto done = QSharedPointer<bool>::create(false);
 
     auto sendChunk = [socket, file, done]() {
-         qDebug()<<Q_FUNC_INFO<<"In sendChunk";
         if (*done) return;
 
         if (!file->atEnd()) {
-            qDebug()<<Q_FUNC_INFO<<"In sendChunk, write";
             QByteArray chunk = file->read(chunkSize);
             socket->write(chunk);
         } else {
-            qDebug()<<Q_FUNC_INFO<<"In sendChunk, close";
             file->close();
             file->deleteLater();
             *done = true;
@@ -500,6 +494,7 @@ void SyncServer::handleUpload(QTcpSocket *socket,
         return;
     }
 
+    m_excludedIp = socket->peerAddress().toString();
     m_pendingDownloads.append(fullPath);
     file.write(body);
     file.close();
@@ -512,9 +507,6 @@ void SyncServer::handleUpload(QTcpSocket *socket,
                 "version:" << version<<"rootIndex:"<<rootIndex<<"size:"<<body.size();
 
     sendHttpResponse(socket, 200, "OK", QString("File uploaded"));
-
-    // Уведомить других клиентов
-    notifyUpdate(relativePath, false, rootIndex);
 }
 
 void SyncServer::sendHttpResponse(QTcpSocket *socket, int code, const QString &status,
@@ -611,6 +603,11 @@ void SyncServer::notifyUpdate(const QString &relativePath, bool deleted, int roo
 
     for (auto it = m_registeredClients.begin(); it != m_registeredClients.end(); ++it) {
         const QString &clientIp = it.key();
+        if (!m_excludedIp.isEmpty() && m_excludedIp == clientIp) {
+            m_excludedIp = "";
+            continue;
+        }
+
         QHostAddress clientAddr(clientIp);
 
         QTcpSocket *socket = new QTcpSocket(this);
@@ -646,6 +643,8 @@ void SyncServer::handleDelete(QTcpSocket *socket, const QMap<QString, QString> &
     QString fullPath = resolveFullPath(rootIndex, relativePath);
     QFile file(fullPath);
 
+    m_excludedIp = socket->peerAddress().toString();
+
     if (file.exists() && !file.remove()) {
         sendHttpResponse(socket, 500, "Internal Server Error", QString("Failed to delete file"));
         return;
@@ -655,8 +654,6 @@ void SyncServer::handleDelete(QTcpSocket *socket, const QMap<QString, QString> &
     qDebug() << "Deleted file:" << relativePath;
 
     sendHttpResponse(socket, 200, "OK", QString("File deleted"));
-
-    notifyUpdate(relativePath, true, rootIndex);
 }
 
 QString SyncServer::resolveFullPath(int rootIndex, const QString &relativePath) const
