@@ -12,6 +12,7 @@
 #include <QJsonObject>
 #include <QJsonDocument>
 #include <QUdpSocket>
+#include <QSharedPointer>
 
 SyncServer::SyncServer(QObject *parent)
     : QObject(parent), m_udpSocket(new QUdpSocket(this))

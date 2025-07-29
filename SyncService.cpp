@@ -9,6 +9,7 @@
 #include <QDirIterator>
 #include <QDateTime>
 #include <QUrl>
+#include <QSharedPointer>
 
 static QString makeKey(int rootIndex, const QString &relativePath) {
     return QString::number(rootIndex) + ":" + relativePath;
