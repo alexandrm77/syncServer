@@ -1,4 +1,6 @@
-#include <QCoreApplication>
+#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
 #include <QCommandLineParser>
 #include <QTcpSocket>
 #include <QDebug>
@@ -7,7 +9,7 @@
 
 int main(int argc, char *argv[])
 {
-    QCoreApplication a(argc, argv);
+    QGuiApplication app(argc, argv);
     QCoreApplication::setApplicationName("SimpleCacheServer");
     QCoreApplication::setApplicationVersion("1.0");
 
@@ -17,13 +19,24 @@ int main(int argc, char *argv[])
     parser.addVersionOption();
 
     QCommandLineOption modeOption(QStringList() << "m" << "mode",
-                                  "Mode to run: server or client",
+                                  "Mode to run: server, client or qml",
                                   "mode");
     parser.addOption(modeOption);
-    parser.process(a);
+    parser.process(app);
 
     QString mode = parser.value(modeOption).toLower();
     SyncController controller;
+
+    if (mode == "qml") {
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("syncController", &controller);
+        engine.load(QUrl::fromLocalFile("TestPage.qml"));
+        if (engine.rootObjects().isEmpty()) {
+            qCritical() << "Failed to load QML interface";
+            return 1;
+        }
+        return app.exec();
+    }
 
     if (mode == "server") {
         controller.switchToMode(SyncController::Mode::Server);
@@ -34,5 +47,5 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    return a.exec();
+    return app.exec();
 }

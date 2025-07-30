@@ -1,4 +1,4 @@
-QT += core network
+QT += core network qml quick
 
 CONFIG += c++11 console
 CONFIG -= app_bundle
@@ -24,13 +24,8 @@ HEADERS += \
     SyncService.h \
     SyncServiceHelper.h
 
-#target.path = /usr/bin
-#INSTALLS += target
-
 DISTFILES += rpm/SyncServer.spec \
-             SyncServer.desktop
+             SyncServer.desktop \
+             TestPage.qml
 
-#INSTALLS += desktop
 
-#desktop.path = /usr/share/applications
-#desktop.files = SyncServer.desktop

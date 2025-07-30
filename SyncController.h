@@ -18,7 +18,7 @@ public:
     enum class Mode { None, Server, Client };
     Q_ENUM(Mode)
 
-    void switchToMode(Mode mode);
+    Q_INVOKABLE void switchToMode(Mode mode);
     Mode currentMode() const;
 
 signals:
